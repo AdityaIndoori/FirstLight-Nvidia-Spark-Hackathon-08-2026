@@ -236,7 +236,22 @@ export function openImage(item) {
   cap.style.cssText =
     "max-width:92vw;color:#dde6ee;font-size:13px;text-align:center;line-height:1.5;";
   const capText = document.createElement("div");
+  // Say what the caption is ABOUT. It describes ONE structure that the grader
+  // singled out, but it is printed under a frame covering hundreds of metres and
+  // tens of buildings, so without this an operator reads "partial collapse" and
+  // scans the whole photo for damage that is confined to one roof.
+  const nBld = (item.footprint_ids || []).length;
   capText.textContent = item.caption || "no caption";
+  const scope = document.createElement("div");
+  scope.style.cssText = "color:#8899aa;font-size:11.5px;margin-top:5px;";
+  if (item.caption && nBld > 1) {
+    scope.textContent =
+      "describes the worst structure in this frame" +
+      (item.caption_anchor ? " (" + item.caption_anchor + ")" : "") +
+      ", not all " + nBld + " buildings shown";
+  } else if (item.caption && nBld === 1) {
+    scope.textContent = "describes the one structure in this frame";
+  }
   const meta = document.createElement("div");
   meta.style.cssText = "color:#8899aa;font-size:11.5px;margin-top:4px;";
   const where = item.centroid
@@ -250,7 +265,7 @@ export function openImage(item) {
     where +
     " · worst grade " +
     classLabel(item.class_max);
-  cap.append(capText, meta);
+  cap.append(capText, scope, meta);
 
   const close = document.createElement("button");
   close.type = "button";

@@ -28,7 +28,10 @@ CREATE TABLE IF NOT EXISTS tiles (
   analyzed_at     REAL,
   latency_ms      INTEGER,
   geo_source      TEXT,
-  stored_path     TEXT
+  stored_path     TEXT,
+  -- The grading settings this tile was processed under (VL budget and concurrency),
+  -- so a published latency percentile never averages tiles graded different ways.
+  grading_profile TEXT
 );
 
 CREATE TABLE IF NOT EXISTS buildings (
@@ -63,7 +66,26 @@ CREATE TABLE IF NOT EXISTS archive (
   class_max      INTEGER DEFAULT 0,
   key_evidence   INTEGER NOT NULL DEFAULT 0,
   embedding      BLOB,
-  footprints_json TEXT
+  footprints_json TEXT,
+  -- The footprint the caption describes. A tile holds tens of buildings and the
+  -- caption is about one of them, so the console can say which.
+  caption_anchor TEXT
+);
+
+-- Operator edits to the drafted plan. WHY a table: /api/plan recomputes the draft
+-- from the current ranking on every poll, so an edit that lived only in the log was
+-- discarded ~2 s later - a reassign visibly snapped back, and add/reorder/delete
+-- did nothing at all. These rows are replayed over each fresh draft, so an operator
+-- decision outlives a re-rank without freezing the ranking underneath it.
+CREATE TABLE IF NOT EXISTS plan_overrides (
+  footprint_id TEXT PRIMARY KEY,
+  agency       TEXT,          -- reassigned owner, NULL to keep the drafted one
+  order_key    REAL,          -- operator ordering within the agency, NULL for drafted
+  deleted      INTEGER NOT NULL DEFAULT 0,
+  units        INTEGER,       -- operator-set crew count, NULL for drafted
+  task         TEXT,          -- operator-edited task text, NULL for drafted
+  operator     TEXT,
+  ts           REAL
 );
 
 CREATE TABLE IF NOT EXISTS road_blocks (
@@ -127,9 +149,27 @@ def conn() -> sqlite3.Connection:
     return c
 
 
+# Columns added after the first box was already running. CREATE TABLE IF NOT EXISTS
+# silently does nothing to an existing table, so a schema edit alone would leave a
+# populated DB one column short and every read of it would raise. Additive only:
+# nothing here drops or rewrites operator data.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("archive", "caption_anchor", "TEXT"),
+    # The grading settings that produced this tile's latency, so a published
+    # percentile never averages tiles graded under different settings.
+    ("tiles", "grading_profile", "TEXT"),
+)
+
+
 def init() -> None:
     c = conn()
     c.executescript(SCHEMA)
+    for table, column, decl in _ADDED_COLUMNS:
+        have = {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+        if not have:
+            continue  # the table itself is absent; SCHEMA above owns creating it
+        if column not in have:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
     c.commit()
 
 

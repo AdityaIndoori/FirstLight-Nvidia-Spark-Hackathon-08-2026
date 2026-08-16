@@ -68,6 +68,10 @@ RERUN_SOURCES = frozenset({"archive-add", "upload", "review", "replay"})
 
 _STAGE_OK = "ok"
 _STAGE_SKIPPED = "skipped"
+# Prefix for a stage that did not error but deliberately refused. Kept distinct
+# because the operator's card must show the reason while the unauthenticated log
+# export must not: see TileStages.failed().
+_STAGE_WITHHELD = "withheld"
 
 _inited: set[str] = set()
 _init_lock = threading.Lock()
@@ -141,9 +145,19 @@ class TileStages:
         return asdict(self)
 
     def failed(self) -> Optional[str]:
+        """The first stage that ERRORED, or None.
+
+        A deliberate withhold is NOT a failure: it is the gate working, and its
+        reason names what the detector saw. This value reaches the unauthenticated
+        decision-log export, so `_STAGE_WITHHELD`-prefixed values are excluded here
+        and surface only on the operator's stage card.
+        """
         for name, value in asdict(self).items():
-            if value not in (_STAGE_OK, _STAGE_SKIPPED):
-                return f"{name}: {value}"
+            if value in (_STAGE_OK, _STAGE_SKIPPED):
+                continue
+            if value.startswith(_STAGE_WITHHELD):
+                continue
+            return f"{name}: {value}"
         return None
 
 
@@ -345,8 +359,8 @@ def _write_tile_row(
     db.run(
         """INSERT INTO tiles
              (filename, sha256, status, stored, withheld_reason, needs_geo, bounds_json,
-              captured_at, analyzed_at, latency_ms, geo_source, stored_path)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+              captured_at, analyzed_at, latency_ms, geo_source, stored_path, grading_profile)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(filename) DO UPDATE SET
               sha256 = excluded.sha256,
               status = excluded.status,
@@ -357,7 +371,8 @@ def _write_tile_row(
               analyzed_at = excluded.analyzed_at,
               latency_ms = excluded.latency_ms,
               geo_source = excluded.geo_source,
-              stored_path = excluded.stored_path""",
+              stored_path = excluded.stored_path,
+              grading_profile = excluded.grading_profile""",
         (
             rec.filename,
             sha,
@@ -371,6 +386,9 @@ def _write_tile_row(
             int(rec.latency_ms),
             geo_source,
             stored_path,
+            # The settings this tile was graded under, so the published percentile
+            # only ever averages comparable tiles.
+            grading_profile(),
         ),
     )
 
@@ -563,6 +581,12 @@ def _analyze(p: Path, source: str, t0: float) -> contracts.TileRecord:
         stored, reason = archive.try_store(p, rec, graded)
         rec.stored = bool(stored)
         rec.withheld_reason = None if stored else (reason or "withheld")
+        # A deliberate withhold is an OUTCOME, not an error, so it has to reach the
+        # stage card too. Previously only an exception touched stages.store, which
+        # left the privacy gate firing while the card still read "ok" - the one
+        # place in the UI where the operator looks to see what the gate did.
+        if not stored:
+            stages.store = f"{_STAGE_WITHHELD}: {rec.withheld_reason}"
     except Exception as exc:  # noqa: BLE001
         rec.stored = False
         rec.withheld_reason = "storage error"
@@ -682,10 +706,59 @@ def reset_watch_state() -> None:
 
 
 # ---------------------------------------------------------------------- stats
+# Tiles included in the latency percentiles.
+#
+# WHY scoped at all: the table holds every tile this box has ever processed, so
+# after a change that halves per-tile time the strip would still print the old
+# number, and a judge comparing it against a live upload catches the box
+# contradicting itself.
+#
+# WHY by GRADING PROFILE and not by process or row count: the profile is the
+# settings that actually determine per-tile cost, so tiles graded under the same
+# settings are exactly the comparable population - across restarts, which a
+# process-scoped window threw away, and without mixing builds, which a row-count
+# window did (13 tiles, 6 fast and 7 from the old serial path, and any window wide
+# enough to look stable put the median on the old half).
+LATENCY_WINDOW = 24
+
+
+def grading_profile() -> str:
+    """The settings that decide what a tile costs, as a short stable key.
+
+    Recorded per tile so the published percentile only ever averages tiles graded
+    the same way. Changing the VL budget or the concurrency changes this string, and
+    the old tiles stop contaminating the number without anyone having to remember to
+    clear a table.
+    """
+    try:
+        from . import grading
+
+        return f"vl{grading.vl_budget()}c{grading.vl_concurrency()}"
+    except Exception:  # noqa: BLE001 - a HUD scope key is not worth an exception
+        return "unknown"
+
+
 def _latencies() -> list[int]:
+    """Per-tile latencies for the CURRENT grading profile, newest analysis first.
+
+    Ordered on `analyzed_at`, not `captured_at`: captured_at is the image's own
+    timestamp (file mtime or EXIF), so a re-ingested 2018 frame sorts as ancient no
+    matter when we graded it.
+    """
     _ensure_db()
-    rows = db.q("SELECT latency_ms FROM tiles WHERE latency_ms IS NOT NULL AND latency_ms > 0")
+    rows = db.q(
+        "SELECT latency_ms FROM tiles "
+        "WHERE latency_ms IS NOT NULL AND latency_ms > 0 AND grading_profile = ? "
+        "ORDER BY analyzed_at DESC LIMIT ?",
+        (grading_profile(), LATENCY_WINDOW),
+    )
     return sorted(int(r["latency_ms"]) for r in rows)
+
+
+def latency_sample_size() -> int:
+    """How many tiles the published percentiles rest on, so the HUD can say n=4
+    rather than implying a population it does not have."""
+    return len(_latencies())
 
 
 def latency_p50() -> int:

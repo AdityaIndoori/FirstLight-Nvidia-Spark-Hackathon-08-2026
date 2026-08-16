@@ -125,11 +125,11 @@ def store(monkeypatch, tmp_path):
 
     def tile_caption(buildings):
         grading.vl_calls += 1
-        best, best_cls = "", -1
+        best, best_cls, best_id = "", -1, None
         for b in buildings:
             if b.caption and b.cls > best_cls:
-                best, best_cls = b.caption, b.cls
-        return best, ("nemotron-vl" if best else "stub-pixelstat-v1")
+                best, best_cls, best_id = b.caption, b.cls, b.footprint_id
+        return best, ("nemotron-vl" if best else "stub-pixelstat-v1"), best_id
 
     grading.tile_caption = tile_caption
 
@@ -240,6 +240,44 @@ def pipeline(monkeypatch, store):
     monkeypatch.setitem(sys.modules, "app.ingest", ingest)
     monkeypatch.setattr(app, "ingest", ingest, raising=False)
     return ingest
+
+
+def test_dot_sits_on_the_captioned_building_not_the_tile_centre(gate, pipeline, tmp_path, store):
+    """The archive dot must mark the structure the caption describes.
+
+    A tile spans hundreds of metres and holds tens of buildings. This used to return
+    the tile's geometric centre unconditionally, which put the pin on whatever
+    happened to be in the middle - routinely a parking lot - while the caption beside
+    it read "partial collapse". Clicking that dot showed an operator asphalt and told
+    them a building had fallen down.
+    """
+    w, s, e, n = BOUNDS
+    tile_centre = [(w + e) / 2.0, (s + n) / 2.0]
+    # The damaged structure is in a corner, far from the middle of the frame.
+    damaged = [w + (e - w) * 0.15, s + (n - s) * 0.85]
+    intact = [w + (e - w) * 0.80, s + (n - s) * 0.20]
+
+    import app.archive as arch
+
+    blds = [
+        FakeBuilding("t-worst", 3, 0.90, "roof collapsed into the ground floor", damaged),
+        FakeBuilding("t-fine", 0, 0.70, "intact roof, no visible damage", intact),
+    ]
+    rec = contracts.TileRecord(
+        filename="t.jpg", bounds=list(BOUNDS), status="processed",
+        captured_at=time.time(), latency_ms=10,
+        buildings=[contracts.Building(id=b.footprint_id, cls=b.cls, conf=b.conf) for b in blds],
+    )
+    stored, _ = arch.try_store(_image(tmp_path, "t.jpg"), rec, blds)
+    assert stored
+
+    rows = arch.search("", limit=10)["items"]
+    row = next(r for r in rows if r["caption"])
+    assert row["caption"] == "roof collapsed into the ground floor"
+    assert row["caption_anchor"] == "t-worst"
+    # On the damaged building, and NOT on the middle of the frame.
+    assert row["centroid"] == [round(damaged[0], 6), round(damaged[1], 6)]
+    assert row["centroid"] != [round(tile_centre[0], 6), round(tile_centre[1], 6)]
 
 
 # --------------------------------------------------------------------- helpers

@@ -20,7 +20,10 @@
   <input class="opname" id="opname" autocomplete="off" spellcheck="false"
          placeholder="Operator name (required to edit)"
          title="Every grade change, road closure and plan edit is written to an append-only log under this name. No name, no edit.">
-  <input type="file" id="upload-input" multiple accept="image/*,.tif,.tiff" hidden>
+  <!-- .bounds.json is accepted alongside the imagery: a georeferenced JPEG with no
+       EXIF GPS (all of the NOAA post-Michael frames) is only gradeable if its
+       sidecar comes with it, otherwise it lands in needs-geo awaiting a drag. -->
+  <input type="file" id="upload-input" multiple accept="image/*,.tif,.tiff,.json" hidden>
   <button class="btn sec" id="btn-upload">Upload drone images</button>
   <a class="btn big" id="btn-aid" href="api/export/aid-package" download>Download aid package</a>
 </div>

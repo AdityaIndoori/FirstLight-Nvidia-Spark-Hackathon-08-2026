@@ -521,6 +521,22 @@ code {
 .maplibregl-popup-close-button { color: var(--dim) !important; font-size: 15px; }
 .popup h4 { font-size: 13px; margin-bottom: 3px; }
 .popup .sub { color: var(--dim); font-size: 11.5px; }
+
+/* The evidence frame in a dispatch popup. A crew being sent somewhere can argue
+   with a picture and cannot argue with a sentence, so the thumbnail is large
+   enough to read damage from and clickable for the full frame. */
+.popup .ev-shot {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: zoom-in;
+  background: var(--sunk);
+}
+
+.popup .ev-cap { margin-top: 4px; font-style: italic; }
+.popup .ev-none { margin-top: 7px; color: var(--amber); }
 .maplibregl-ctrl-group { background: rgba(13, 18, 25, .9) !important; }
 .maplibregl-ctrl-group button + button { border-top-color: var(--line) !important; }
 .maplibregl-ctrl-attrib { background: rgba(13, 18, 25, .8) !important; }
@@ -607,17 +623,37 @@ code {
 .vuln .idx { white-space: nowrap; }
 .confirmedby { font-size: 11.5px; color: var(--green); margin-top: 3px; }
 
+/* One line, not a code block. The priority is what an operator sorts by, and the
+   working is on the tooltip, so this reads as a value with a label rather than as
+   five factors of monospace competing with the address above it. */
 .formula {
-  font: 12px/1.5 Consolas, "Cascadia Mono", monospace;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-size: 12px;
   color: var(--dim);
   margin-top: 6px;
   background: var(--sunk);
   border-radius: 4px;
-  padding: 6px 8px;
+  padding: 5px 8px;
 }
 
+.formula .flab { text-transform: uppercase; letter-spacing: 1px; font-size: 10.5px; }
 .formula b { color: var(--ink); font-weight: 600; }
-.formula .prod { color: var(--green); }
+.formula .prod {
+  color: var(--green);
+  font: 600 15px/1.2 Consolas, "Cascadia Mono", monospace;
+}
+
+/* "how" is the affordance for the tooltip: without it nothing tells an operator
+   the arithmetic is still there to check. */
+.formula .fhint {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--blue);
+  border-bottom: 1px dotted var(--blue);
+}
 
 .cardrow { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .cardrow .lbl { font-size: 11.5px; color: var(--dim); }

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import os
 import shutil
 import threading
 import time
@@ -54,7 +56,29 @@ def _startup() -> None:
     if ingest and hasattr(ingest, "watch_loop"):
         _watcher = threading.Thread(target=ingest.watch_loop, args=(_stop,), daemon=True)
         _watcher.start()
+    # Warm the sentence embedder off the request path. It is a lazy singleton, and
+    # the first caller pays ~5 s to load the weights: measured, that caller was
+    # /api/status via archive.stats(), which made the console's first poll take 13 s
+    # and look hung. A background thread so startup itself does not block either.
+    threading.Thread(target=_warm_embedder, daemon=True).start()
     db.log("system", "startup", {"policy": "egress-allowlist"})
+
+
+def _warm_embedder() -> None:
+    """Load the embedder now so no HTTP request has to. Never raises: a cold
+    embedder is a slow first search, not a dead service."""
+    try:
+        from . import embed
+
+        t0 = time.time()
+        embed.model_version()
+        db.log(
+            "system",
+            "embedder-warm",
+            {"ms": int((time.time() - t0) * 1000), "version": embed.model_version()},
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.log("system", "embedder-warm-failed", {"error": type(exc).__name__})
 
 
 @app.on_event("shutdown")
@@ -92,12 +116,26 @@ def status() -> dict:
         tile_latency_ms_p50=(
             ingest.latency_p50() if ingest and hasattr(ingest, "latency_p50") else 0
         ),
+        # How many tiles that median rests on. Without it a p50 from four tiles
+        # reads exactly like a p50 from four hundred.
+        tile_latency_n=(
+            ingest.latency_sample_size()
+            if ingest and hasattr(ingest, "latency_sample_size")
+            else 0
+        ),
         tally=tally,
         model_versions={
             "gate": gate.model_version() if gate and hasattr(gate, "model_version") else "not wired",
             "grader": grading.model_version() if grading and hasattr(grading, "model_version") else "not wired",
             "planner": f"{config.NANO_MODEL} @ {config.NANO_URL}",
-            "lightning": f"{config.LIGHTNING_MODEL} @ {config.LIGHTNING_URL} (not wired)",
+            # ballot.model_version() names the endpoint AND the measured ballot p50,
+            # so this row says whether the ballot actually ran rather than asserting
+            # a hardcoded "(not wired)" that outlived the wiring.
+            "lightning": (
+                _mod("ballot").model_version()
+                if _mod("ballot") and hasattr(_mod("ballot"), "model_version")
+                else f"{config.LIGHTNING_MODEL} @ {config.LIGHTNING_URL} (not wired)"
+            ),
             "captioner": f"{config.VL_MODEL} @ {config.VL_URL}",
             "embedder": embed.model_version() if embed and hasattr(embed, "model_version") else "not wired",
         },
@@ -106,6 +144,9 @@ def status() -> dict:
         gpu_power=_power(),
         last_replan_ms=_replan_ms,
         recovery=_recovery,
+        # Measured on this box from the token counts every model server already
+        # returns, so the strip reports throughput instead of "not measured yet".
+        tokens_per_s=_tokens_per_s(),
         doubt_distribution=ranked["doubt_distribution"],
         aoi=config.AOI,
         aoi_name=getattr(config, "AOI_NAME", "custom"),
@@ -144,6 +185,21 @@ def _openshell_status() -> dict:
 def _count(table: str, where: str = "1=1") -> int:
     row = db.q1(f"SELECT COUNT(*) AS n FROM {table} WHERE {where}")
     return int(row["n"]) if row else 0
+
+
+def _tokens_per_s() -> dict:
+    """Measured decode rates, or {} when no model has answered yet.
+
+    Lazy like the other optional modules: vlm pulls in Pillow and the HTTP opener,
+    and the status endpoint must answer on a box where a model server is down.
+    """
+    mod = _mod("vlm")
+    if mod is None or not hasattr(mod, "tokens_per_s"):
+        return {}
+    try:
+        return mod.tokens_per_s()
+    except Exception:  # noqa: BLE001 - a HUD number never breaks status
+        return {}
 
 
 def _mem() -> tuple[float, float]:
@@ -200,18 +256,66 @@ def plan() -> dict:
 
 @app.post("/api/plan/edit")
 def plan_edit(body: dict = Body(...)) -> dict:
+    """Record an operator edit to the plan AND persist it.
+
+    This used to log and return ok without changing anything, so every edit was
+    undone by the next /api/plan poll about two seconds later: a reassign snapped
+    back to the drafted agency in front of the operator. The log is still written -
+    it is the audit trail - but the override table is what makes the edit hold.
+    """
     operator = str(body.get("operator", "")).strip()
     if not operator:
         raise HTTPException(400, "operator name is required for any edit")
     op = str(body.get("op", ""))
     if op not in {"add", "move", "edit", "delete", "reassign"}:
         raise HTTPException(400, f"unknown op {op!r}")
+
+    payload = body.get("payload") or {}
+    footprint_id = str(payload.get("footprint_id") or body.get("footprint_id") or "")
+    applied = False
+    if footprint_id:
+        try:
+            if op == "reassign":
+                scorer.set_plan_override(
+                    footprint_id, operator=operator, agency=str(payload.get("to_agency") or "")
+                )
+            elif op == "delete":
+                scorer.set_plan_override(footprint_id, operator=operator, deleted=True)
+            elif op == "move":
+                scorer.set_plan_override(
+                    footprint_id, operator=operator, order_key=float(payload.get("order_key", 0.0))
+                )
+            elif op == "edit":
+                scorer.set_plan_override(
+                    footprint_id,
+                    operator=operator,
+                    units=(int(payload["units"]) if payload.get("units") is not None else None),
+                    task=(str(payload["task"]) if payload.get("task") else None),
+                )
+            applied = op != "add"
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     db.log(
         f"operator:{operator}",
         f"plan-{op}",
-        {"agency": body.get("agency"), "step_n": body.get("step_n"), "payload": body.get("payload")},
+        {
+            "agency": body.get("agency"),
+            "step_n": body.get("step_n"),
+            "payload": payload,
+            "persisted": applied,
+        },
     )
-    return {"ok": True, "logged": True}
+    return {"ok": True, "logged": True, "persisted": applied}
+
+
+@app.post("/api/plan/reset")
+def plan_reset(body: dict = Body(default={})) -> dict:
+    """Discard every operator edit and return to the drafted plan."""
+    operator = str(body.get("operator", "")).strip()
+    if not operator:
+        raise HTTPException(400, "operator name is required")
+    return {"ok": True, "cleared": scorer.clear_plan_overrides(operator)}
 
 
 @app.post("/api/availability")
@@ -241,14 +345,34 @@ def roadblock(body: dict = Body(...)) -> dict:
 
 @app.post("/api/replan")
 def replan(body: dict = Body(default={})) -> dict:
-    """Re-draft the plan. Availability changes never re-draft silently: the
-    operator saves numbers, then triggers this explicitly."""
+    """Re-draft the plan AND re-task the next flight.
+
+    Availability changes never re-draft silently: the operator saves numbers, then
+    triggers this explicitly. Re-tasking the flight here is the point of the beat,
+    because a replan that returns an identical survey box has not replanned
+    anything. The flight is derived from the staleness and damage state, so a road
+    closure or a grade flip genuinely moves it, and when nothing has changed the box
+    is stable rather than randomly jittered.
+    """
     global _replan_ms, _recovery
     t0 = time.time()
     out = scorer.build_plan()
+    fc = flight()
     _replan_ms = int((time.time() - t0) * 1000)
     _recovery = "stub" if out["drafted_by"].startswith("stub") else "model"
-    db.log(f"operator:{body.get('operator', 'unknown')}", "replan", {"ms": _replan_ms})
+    area = next(
+        (f for f in fc["features"] if f["properties"].get("role") == "survey-area"), None
+    )
+    db.log(
+        f"operator:{body.get('operator', 'unknown')}",
+        "replan",
+        {
+            "ms": _replan_ms,
+            "flight_reason": (area or {}).get("properties", {}).get("reason"),
+            "anchor": (area or {}).get("properties", {}).get("anchor_footprint_id"),
+        },
+    )
+    out["flight"] = fc
     return out
 
 
@@ -317,52 +441,139 @@ def facilities() -> dict:
 
 @app.get("/api/flight")
 def flight() -> dict:
-    """Proposed survey area plus a serpentine path over the least recently seen
-    sector. Nemotron takes this over in B2; the shape is identical either way."""
+    """Proposed survey area plus a serpentine path over the sector that most needs
+    another look.
+
+    WHY every number here is derived rather than declared. The previous version
+    announced 60 m line spacing and a 22 minute flight while flying transects 553 m
+    apart over ground that would take 36 minutes: a camera with a 60 m swath flying
+    553 m lanes photographs about a ninth of the box and calls it surveyed. So the
+    spacing now FIXES the transect count, and the duration is computed from the
+    path actually drawn plus turn overhead.
+
+    Sensor model, stated so it can be argued with: ground swath = 2 * altitude *
+    tan(hfov / 2). At 90 m with a 76 degree horizontal field of view, that is about
+    140 m, and 30 percent sidelap leaves 98 m of usable lane spacing. Those two
+    constants are the whole photogrammetry assumption; change them and the transect
+    count follows.
+    """
     w, s, e, n = config.AOI
-    stale = db.q1(
-        "SELECT centroid_json FROM buildings ORDER BY COALESCE(last_seen_at, 0) ASC LIMIT 1"
+
+    # The sector that most needs another look: oldest observation first, and among
+    # equally stale ground the worst damage, because a destroyed block is where a
+    # second pass changes a decision. Ties break on footprint_id so a replan with
+    # no new information is stable rather than random.
+    row = db.q1(
+        """SELECT footprint_id, centroid_json, damage_class, last_seen_at
+             FROM buildings
+            WHERE centroid_json IS NOT NULL
+            ORDER BY COALESCE(last_seen_at, 0) ASC,
+                     COALESCE(damage_class, 0) DESC,
+                     footprint_id ASC
+            LIMIT 1"""
     )
-    cx, cy = ((w + e) / 2, (s + n) / 2)
-    if stale:
-        c = db.jload(stale["centroid_json"], [cx, cy])
-        cx, cy = c[0], c[1]
-    dx, dy = (e - w) / 6, (n - s) / 6
+    cx, cy = (w + e) / 2.0, (s + n) / 2.0
+    reason = "AOI centre: no graded buildings yet, so nothing is stale"
+    if row:
+        c = db.jload(row["centroid_json"], [cx, cy])
+        cx, cy = float(c[0]), float(c[1])
+        age_h = (
+            (time.time() - float(row["last_seen_at"])) / 3600.0 if row["last_seen_at"] else None
+        )
+        reason = (
+            f"least recently surveyed ground, class {int(row['damage_class'] or 0)}"
+            + (f", last seen {age_h:.1f} h ago" if age_h is not None else ", never seen")
+        )
+
+    # A box sized in METRES, not as a fraction of the AOI. One sortie is one
+    # battery, so the area has to be something a drone can actually fly.
+    half_m = _env_float("FIRSTLIGHT_SURVEY_HALF_M", 400.0)
+    lat_scale = math.cos(math.radians(cy)) or 1.0
+    dx = half_m / (111_320.0 * lat_scale)
+    dy = half_m / 110_540.0
     box = [
-        [cx - dx, cy - dy],
-        [cx + dx, cy - dy],
-        [cx + dx, cy + dy],
-        [cx - dx, cy + dy],
-        [cx - dx, cy - dy],
+        [cx - dx, cy - dy], [cx + dx, cy - dy], [cx + dx, cy + dy],
+        [cx - dx, cy + dy], [cx - dx, cy - dy],
     ]
-    transects = 7
+
+    altitude = _env_float("FIRSTLIGHT_SURVEY_ALT_M", 90.0)
+    hfov = _env_float("FIRSTLIGHT_SENSOR_HFOV_DEG", 76.0)
+    sidelap = _env_float("FIRSTLIGHT_SIDELAP", 0.30)
+    speed = _env_float("FIRSTLIGHT_SURVEY_SPEED_MS", 12.0)
+
+    swath_m = 2.0 * altitude * math.tan(math.radians(hfov) / 2.0)
+    max_spacing_m = max(10.0, swath_m * (1.0 - sidelap))
+    height_m = 2.0 * half_m
+    # Spacing drives the count, never the other way round: ceil so the lanes are at
+    # or TIGHTER than the coverage limit, never wider.
+    transects = max(2, int(math.ceil(height_m / max_spacing_m)) + 1)
+    # Then report the spacing actually flown. Ceiling the count and distributing
+    # evenly makes the real gap smaller than the limit that produced it, and
+    # publishing the limit instead of the gap is how a plan comes to claim 60 m
+    # while flying 553 m.
+    spacing_m = height_m / (transects - 1)
+
     line: list[list[float]] = []
     for i in range(transects):
-        y = cy - dy + (2 * dy) * i / (transects - 1)
-        span = [cx - dx, cx + dx] if i % 2 == 0 else [cx + dx, cx - dx]
-        line.append([span[0], y])
-        line.append([span[1], y])
+        y = (cy - dy) + (2.0 * dy) * (i / (transects - 1))
+        x0, x1 = (cx - dx, cx + dx) if i % 2 == 0 else (cx + dx, cx - dx)
+        line.append([x0, y])
+        line.append([x1, y])
+
+    # Measured off the path that is actually drawn, plus a turn allowance, because a
+    # serpentine spends real time decelerating and coming about at every lane end.
+    path_m = 0.0
+    for i in range(len(line) - 1):
+        ax, ay = line[i]
+        bx, by = line[i + 1]
+        path_m += math.hypot(
+            (bx - ax) * 111_320.0 * lat_scale, (by - ay) * 110_540.0
+        )
+    turn_s = _env_float("FIRSTLIGHT_SURVEY_TURN_S", 6.0) * (transects - 1)
+    est_min = round((path_m / max(1.0, speed) + turn_s) / 60.0, 1)
+
     return {
         "type": "FeatureCollection",
         "features": [
             {
                 "type": "Feature",
                 "geometry": {"type": "Polygon", "coordinates": [box]},
-                "properties": {"role": "survey-area", "reason": "least recently surveyed sector"},
+                "properties": {
+                    "role": "survey-area",
+                    "reason": reason,
+                    "anchor_footprint_id": (row["footprint_id"] if row else None),
+                    "area_km2": round((2 * half_m) ** 2 / 1e6, 2),
+                },
             },
             {
                 "type": "Feature",
                 "geometry": {"type": "LineString", "coordinates": line},
                 "properties": {
                     "role": "survey-path",
-                    "altitude_m_agl": 90,
-                    "line_spacing_m": 60,
+                    "altitude_m_agl": int(altitude),
+                    "line_spacing_m": int(round(spacing_m)),
                     "transects": transects,
-                    "est_flight_min": 22,
+                    "est_flight_min": est_min,
+                    "path_m": int(round(path_m)),
+                    "speed_ms": speed,
+                    "ground_swath_m": int(round(swath_m)),
+                    "sidelap": sidelap,
                 },
             },
         ],
     }
+
+
+def _env_float(name: str, default: float) -> float:
+    """A survey constant, overridable so a different airframe or camera can be
+    flown without editing code."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 @app.get("/api/route")
@@ -495,13 +706,36 @@ def tiles(limit: int = Query(200, ge=1, le=2000)) -> dict:
 @app.post("/api/upload")
 async def upload(files: list[UploadFile]) -> dict:
     """One request per file on the client side, but accept a batch too: one bad
-    file must never fail the rest."""
+    file must never fail the rest.
+
+    A `.bounds.json` sidecar in the same selection is honoured. WHY: the geo chain
+    reads GeoTIFF transform, then EXIF GPS, then sidecar, and the watch-folder path
+    already picks sidecars up off disk - but a browser upload dropped them, so
+    georeferenced JPEGs with no EXIF (all of the NOAA post-Michael imagery, for
+    instance) landed in needs_geo and could not be graded without a manual drag.
+    Sidecars are written FIRST so the image that follows finds its bounds.
+    """
     ingest = _mod("ingest")
     if ingest is None:
         raise HTTPException(503, "ingest not wired")
-    out = []
+
+    images: list[tuple[str, UploadFile]] = []
     for uf in files:
         safe = Path(uf.filename or "upload.jpg").name
+        if safe.endswith(".bounds.json"):
+            try:
+                (config.WATCH_DIR / safe).write_bytes(await uf.read())
+            except OSError as exc:
+                # Not fatal: the image still ingests and lands in needs_geo, which
+                # the operator can drag into place. Recorded so a silently missing
+                # sidecar is discoverable rather than mysterious.
+                db.log("upload", "sidecar-write-failed",
+                       {"file": safe, "error": type(exc).__name__})
+            continue
+        images.append((safe, uf))
+
+    out = []
+    for safe, uf in images:
         dest = config.WATCH_DIR / safe
         try:
             with dest.open("wb") as fh:
@@ -774,5 +1008,26 @@ def flight_export(fmt: str = Query("plan")) -> Response:
 
 
 # --------------------------------------------------------------------- static
+class _NoStoreStatic(StaticFiles):
+    """Serve the console with caching off.
+
+    WHY: StaticFiles sends etag and last-modified but no Cache-Control, so a
+    browser is free to heuristically cache the JS. On this box that produced a
+    console running code the server had already replaced - an upload built two
+    cards for one image and spun for the full three-minute card timeout, with the
+    deployed file on disk being correct the whole time. A demo box serves one
+    operator over a metre of ethernet; there is nothing to gain by caching and a
+    silent version skew to lose.
+    """
+
+    def is_not_modified(self, response_headers, request_headers) -> bool:  # noqa: D102
+        return False
+
+    async def get_response(self, path: str, scope):  # noqa: D102
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        return response
+
+
 if config.WEB.exists():
-    app.mount("/", StaticFiles(directory=str(config.WEB), html=True), name="web")
+    app.mount("/", _NoStoreStatic(directory=str(config.WEB), html=True), name="web")

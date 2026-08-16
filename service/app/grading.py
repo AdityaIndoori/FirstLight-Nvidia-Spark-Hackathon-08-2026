@@ -29,6 +29,7 @@ a pre image.
 """
 from __future__ import annotations
 
+import concurrent.futures as futures
 import functools
 import hashlib
 import logging
@@ -71,20 +72,33 @@ GRADED_BY_XVIEW2 = "xview2"
 OUTLINE_XVIEW2 = "xview2"
 OUTLINE_FOOTPRINTS = "footprints"
 OUTLINE_GRID = "grid"
+# Coverage exists and this frame has no buildings under it. Distinct from "grid"
+# (we guessed) and from a failure: open ground is a real, reportable answer.
+OUTLINE_NONE = "none-in-frame"
 
-# A judgement, and the reason is latency: VL measured at 7.0 s per crop on this
-# box, and the plan's per-tile budget is 10 s. Twelve crops is what fits when the
-# ensemble runs warm and the rest of the tile is stubbed in milliseconds.
-DEFAULT_VL_CALLS_PER_TILE = 12
+# Every number below is MEASURED on this box (service/tools/measure_budget.py),
+# not estimated. One VL grading call on a real footprint crop is ~2.2 s.
+#
+# The captioner's vLLM server runs --max-num-seqs 4, and measured wall time per
+# tile at 12 calls was 17.5 s at 2 lanes, 12.6 s at 4, 11.5 s at 8: past the
+# server's own batch width the curve flattens, so 8 lanes is the knee and not a
+# guess. Held at 8 rather than raised because the same GPU serves the planner and
+# the k=8 ballot.
+DEFAULT_VL_CONCURRENCY = 8
+
+# At 8 lanes the sweep measured p50 7.6 s (budget 6), 9.1 s (8), 11.2 s (10),
+# 13.5 s (12). The plan's per-tile budget is 10 s, so 8 is the most model coverage
+# that fits: 8 model grades per tile with p50 9.1 s and worst case 10.9 s.
+DEFAULT_VL_CALLS_PER_TILE = 8
 # Footprints outlined per tile. Sized so most buildings on screen carry a real
 # model grade rather than a stub: a rank list where every row shows the same
 # class and the same confidence is not a rank list.
 DEFAULT_FOOTPRINTS_PER_TILE = 40
 
-# The wall-clock companion to the call cap. Twelve crops measured at 7.0 s each is
-# 84 s of VL time, so batching them all is already over budget on a busy box: this
-# is the number that actually bounds a tile, and the call cap bounds the queue.
-DEFAULT_TILE_VL_SECONDS = 45.0
+# The wall-clock companion to the call cap. Eight concurrent crops at ~2.2 s land
+# in ~9 s, so this is the ceiling that catches a server which has gone slow rather
+# than down: past it the remaining crops take the labelled stub.
+DEFAULT_TILE_VL_SECONDS = 20.0
 
 # Context around a footprint helps the grader see a collapsed wall lying outside
 # the polygon, expressed as a fraction of the bbox.
@@ -411,12 +425,17 @@ def _outlines_from_footprints(bounds: Sequence[float]) -> list[tuple[str, dict, 
 def _outlines_grid(bounds: Sequence[float], *, cols: int = 4, rows: int = 3) -> list[
     tuple[str, dict, dict]
 ]:
-    """Last resort: a deterministic grid so the pipeline never dead-ends.
+    """A deterministic grid, for the case where we KNOW there is structure in frame
+    but have no geometry for it.
 
-    Twelve cells over the middle of the tile. These are synthetic, they are
-    labelled "unnamed structure near ..." by the join like any unaddressed
-    footprint, and the status bar reports the outline source as `grid`, so nothing
-    downstream mistakes them for surveyed geometry.
+    NOT a general fallback. It used to run whenever the footprint layer returned
+    nothing, which meant a tile over woodland - where the nearest real footprint was
+    238 m away - produced twelve identical 15.9 x 21.0 m rectangles, and the address
+    join then labelled them with real street addresses off the nearest road. That is
+    a rescue list telling a fire crew to search a building that does not exist.
+
+    An empty footprint layer over open ground is INFORMATION: there is nothing
+    there. See _outlines, which now reports that instead of inventing coverage.
     """
     w, s, e, n = _span(bounds)
     inset_x, inset_y = (e - w) * 0.1, (n - s) * 0.1
@@ -439,6 +458,15 @@ def _outlines_grid(bounds: Sequence[float], *, cols: int = 4, rows: int = 3) -> 
 def _outlines(
     img: Optional[Image.Image], bounds: Sequence[float]
 ) -> tuple[list[tuple[str, dict, dict]], str]:
+    """Building outlines for one tile, and which tier produced them.
+
+    Tiers in order: a segmentation mask, then the county footprint layer, then
+    nothing. There is deliberately no synthetic fallback: a footprint layer that
+    covers the AOI and returns zero buildings under a tile is telling us the ground
+    is empty, and the honest answer to "what buildings are here" is none. Inventing
+    a grid there produced twelve identical rectangles in woodland that the address
+    join then labelled with real street addresses.
+    """
     if img is not None:
         mask = _xview2_mask(img)
         if mask is not None:
@@ -453,9 +481,14 @@ def _outlines(
         shapes = _outlines_from_footprints(bounds)
     except Exception as exc:  # noqa: BLE001 - a broken dataset file costs outlines, not the tile
         log.warning("footprint outlines failed: %s", exc)
-        shapes = []
+        return _outlines_grid(bounds), OUTLINE_GRID
     if shapes:
         return shapes, OUTLINE_FOOTPRINTS
+    # Coverage exists but this frame has no buildings in it. Say so.
+    if datasets.footprints():
+        return [], OUTLINE_NONE
+    # No footprint layer at all on this box: we know nothing about the ground rather
+    # than knowing it is empty, so the grid is a labelled placeholder, not a claim.
     return _outlines_grid(bounds), OUTLINE_GRID
 
 
@@ -474,6 +507,17 @@ def _env_number(name: str, default: float, cast: Any) -> Any:
 def vl_budget() -> int:
     """VL calls allowed per tile. Env-tunable so a slow box can drop it live."""
     return _env_number("FIRSTLIGHT_VL_CALLS_PER_TILE", DEFAULT_VL_CALLS_PER_TILE, int)
+
+
+def vl_concurrency() -> int:
+    """VL calls in flight at once, per tile.
+
+    Measured on the box: one grading call is ~2.2 s and the captioner's server runs
+    --max-num-seqs 4, so issuing calls serially spent almost all of the tile's wall
+    time waiting on a GPU with spare batch width. Kept at the measured knee rather
+    than raised further because the same GPU serves the planner and the ballot.
+    """
+    return max(1, _env_number("FIRSTLIGHT_VL_CONCURRENCY", DEFAULT_VL_CONCURRENCY, int))
 
 
 def footprint_cap() -> int:
@@ -527,8 +571,47 @@ def outline_and_grade(
     wall_budget_s = tile_wall_budget()
     started = time.monotonic()
 
-    graded: list[GradedBuilding] = []
+    # The VL calls run CONCURRENTLY. WHY: measured on the box, one grading call is
+    # ~1.8 s, so twelve of them issued one after another cost ~22 s and drove a
+    # 33 s p50 per tile against a <10 s budget. vLLM batches concurrent requests
+    # on the same server, so the wall time for the batch is far below the sum. The
+    # cap stays small because the same GPU is serving the planner and the ballot.
+    slot_list = [i for i in range(len(shapes)) if i in model_slots]
+    crops: dict[int, tuple[int, int, int, int]] = {}
+    if img is not None:
+        for idx in slot_list:
+            _fid, geom, _p = shapes[idx]
+            c = _crop_box(geom, box, img.width, img.height)
+            if c is not None:
+                crops[idx] = c
+
+    results: dict[int, dict] = {}
     vl_calls = 0
+    if crops:
+        lanes = max(1, min(vl_concurrency(), len(crops)))
+        deadline = started + wall_budget_s
+
+        def _one(idx: int) -> tuple[int, Optional[dict]]:
+            # Checked per task rather than once: a queue that backs up must stop
+            # issuing work, not just stop starting it.
+            if time.monotonic() >= deadline:
+                return idx, None
+            return idx, vlm.caption_and_grade(img, crop_box=crops[idx])
+
+        with futures.ThreadPoolExecutor(max_workers=lanes) as pool:
+            for idx, res in pool.map(_one, list(crops)):
+                if res is None:
+                    continue
+                results[idx] = res
+                vl_calls += 1
+        if len(results) < len(crops):
+            log.info(
+                "tile VL wall budget spent after %d of %d calls, stubbing the rest",
+                len(results),
+                len(crops),
+            )
+
+    graded: list[GradedBuilding] = []
     model_graded = 0
     stub_graded = 0
     for idx, (fid, geom, props) in enumerate(shapes):
@@ -536,15 +619,8 @@ def outline_and_grade(
             round((box[0] + box[2]) / 2, 7),
             round((box[1] + box[3]) / 2, 7),
         ]
-        crop = _crop_box(geom, box, img.width, img.height) if img is not None else None
-        result: Optional[dict] = None
-        if idx in model_slots and crop is not None:
-            if time.monotonic() - started < wall_budget_s:
-                vl_calls += 1
-                result = vlm.caption_and_grade(img, crop_box=crop)
-            else:
-                log.info("tile VL wall budget spent after %d calls, stubbing the rest", vl_calls)
-                model_slots = set()
+        crop = crops.get(idx) or (_crop_box(geom, box, img.width, img.height) if img is not None else None)
+        result = results.get(idx)
         if result is None:
             result = vlm.stub_grade(img, crop_box=crop) if img is not None else _blind_grade()
         by = GRADED_BY_VL if result["how"] == vlm.GRADE_HOW_MODEL else GRADED_BY_STUB
@@ -597,26 +673,34 @@ def _blind_grade() -> dict:
 
 
 # ------------------------------------------------------------- tile summaries
-def tile_caption(buildings: Sequence[GradedBuilding]) -> tuple[str, str]:
+def tile_caption(
+    buildings: Sequence[GradedBuilding],
+) -> tuple[str, str, Optional[str]]:
     """One archive caption per tile, reusing a caption the VL pass already wrote.
 
     A6 forbids a second VLM call per crop, so the tile caption is picked, not
     generated: the most severe building that got the model path, because the tile
-    should describe the worst thing in the frame. Returns (caption, caption_by).
+    should describe the worst thing in the frame.
+
+    Returns (caption, caption_by, anchor_footprint_id). The anchor is the building
+    the caption is ABOUT, so the archive dot can sit on that structure instead of on
+    the tile's geometric centre - a caption reading "partial collapse" is misleading
+    when the pin it travels with is over a parking lot 200 m away.
     """
     model_captions = [
         b for b in buildings if b.graded_by == GRADED_BY_VL and b.caption and b.caption != vlm.STUB_CAPTION
     ]
     if model_captions:
         best = max(model_captions, key=lambda b: (int(b.cls), float(b.conf), b.area_m2))
-        return best.caption, GRADED_BY_VL
+        return best.caption, GRADED_BY_VL, best.footprint_id
     if buildings:
         worst = max(buildings, key=lambda b: (int(b.cls), b.area_m2))
         return (
             f"{vlm.STUB_CAPTION}, worst structure graded {contracts.CLASS_LABEL[int(worst.cls)]}",
             GRADED_BY_STUB,
+            worst.footprint_id,
         )
-    return vlm.STUB_CAPTION, GRADED_BY_STUB
+    return vlm.STUB_CAPTION, GRADED_BY_STUB, None
 
 
 def outline_source() -> str:

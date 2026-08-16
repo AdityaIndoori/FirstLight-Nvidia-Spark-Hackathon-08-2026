@@ -29,6 +29,7 @@ import json
 import logging
 import math
 import re
+import statistics
 import threading
 import time
 import urllib.error
@@ -68,6 +69,9 @@ _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 _STATS = {GRADE_HOW_MODEL: 0, GRADE_HOW_STUB: 0}
 _STATS_LOCK = threading.Lock()
+# Decode rates per served model name, a bounded rolling window each. Guarded by
+# _STATS_LOCK because ingest grades a tile from several threads at once.
+_THROUGHPUT: dict[str, list[float]] = {}
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
@@ -167,6 +171,11 @@ def _post(url: str, payload: dict, timeout: float) -> dict:
 
     WHY the wall-clock check: urllib's timeout is per socket operation, so a
     slow-dripping response can outlive it. Ingest cannot afford that.
+
+    Also the one place every model call passes through, so decode throughput is
+    recorded here. The servers report completion_tokens on every response and we
+    were discarding it, which is why the HUD said "models not measured yet" on a box
+    that had just run hundreds of generations.
     """
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -178,7 +187,39 @@ def _post(url: str, payload: dict, timeout: float) -> dict:
     elapsed = time.monotonic() - started
     if elapsed > timeout:
         raise TimeoutError(f"{url} took {elapsed:.1f}s over a {timeout:.1f}s budget")
-    return json.loads(raw.decode("utf-8"))
+    parsed = json.loads(raw.decode("utf-8"))
+    _note_throughput(payload.get("model"), parsed, elapsed)
+    return parsed
+
+
+def _note_throughput(model: Any, parsed: Any, elapsed: float) -> None:
+    """Remember tokens/second per model. Never raises: a HUD number must not be
+    able to fail a grade."""
+    try:
+        out = int((parsed or {}).get("usage", {}).get("completion_tokens") or 0)
+        # Sub-10-token replies are dominated by prefill and time-to-first-token, so
+        # including them would understate steady-state decode rate.
+        if not model or out < 10 or elapsed <= 0:
+            return
+        with _STATS_LOCK:
+            samples = _THROUGHPUT.setdefault(str(model), [])
+            samples.append(out / elapsed)
+            # A bounded window: the number on screen should describe the box now,
+            # not average in a cold first call from twenty minutes ago.
+            if len(samples) > 24:
+                del samples[: len(samples) - 24]
+    except (AttributeError, TypeError, ValueError):
+        return
+
+
+def tokens_per_s() -> dict:
+    """Median decode rate per model, measured on this box, for the status strip."""
+    with _STATS_LOCK:
+        return {
+            name: round(statistics.median(vals), 1)
+            for name, vals in _THROUGHPUT.items()
+            if vals
+        }
 
 
 def _strip_think(text: str) -> str:
@@ -668,5 +709,5 @@ __all__ = [
     "nano",
     "stats",
     "stub_grade",
-    "vl",
+    "tokens_per_s",
 ]

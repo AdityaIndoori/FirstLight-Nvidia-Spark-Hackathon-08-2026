@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -168,6 +169,61 @@ def test_env_tunes_the_cap(monkeypatch):
     monkeypatch.setenv("FIRSTLIGHT_VL_CALLS_PER_TILE", "not-a-number")
     assert grading.vl_budget() == grading.DEFAULT_VL_CALLS_PER_TILE
 
+def test_vl_calls_overlap_rather_than_running_one_at_a_time(
+    tmp_path, datadir, no_xview2, fake_vl, monkeypatch
+):
+    """The VL calls for one tile must be in flight together.
+
+    Measured on the box, a grading call is ~2.2 s. Issued serially, twelve of them
+    put per-tile p50 at 33 s against a 10 s budget while the GPU sat with spare
+    batch width. This asserts the overlap directly: a slow fake VL records how many
+    calls are concurrently inside it, and a serial implementation can never see more
+    than one.
+    """
+    import threading
+
+    live = 0
+    peak = 0
+    guard = threading.Lock()
+    real = fake_vl["grade"] if "grade" in fake_vl else None
+
+    def slow_grade(*a, **kw):
+        nonlocal live, peak
+        with guard:
+            live += 1
+            peak = max(peak, live)
+        try:
+            time.sleep(0.05)
+            return {
+                "class": 2,
+                "caption": "a structure with a large roof hole",
+                "conf": 0.8,
+                "how": vlm.GRADE_HOW_MODEL,
+            }
+        finally:
+            with guard:
+                live -= 1
+
+    monkeypatch.setattr(vlm, "caption_and_grade", slow_grade)
+    monkeypatch.setenv("FIRSTLIGHT_VL_CONCURRENCY", "4")
+    graded = grading.outline_and_grade(_tile(tmp_path / "conc.jpg"), BOUNDS, vl_budget_override=8)
+
+    assert graded, "the tile still has to produce buildings"
+    assert peak > 1, f"VL calls ran one at a time (peak in flight = {peak})"
+    assert peak <= 4, f"more calls in flight ({peak}) than the configured 4 lanes"
+
+
+def test_vl_concurrency_is_env_tunable(monkeypatch):
+    """A box whose server runs a narrower batch can drop the lanes without a deploy."""
+    monkeypatch.setenv("FIRSTLIGHT_VL_CONCURRENCY", "2")
+    assert grading.vl_concurrency() == 2
+    # Never zero: that would mean no VL call could ever be issued.
+    monkeypatch.setenv("FIRSTLIGHT_VL_CONCURRENCY", "0")
+    assert grading.vl_concurrency() == 1
+    monkeypatch.setenv("FIRSTLIGHT_VL_CONCURRENCY", "not-a-number")
+    assert grading.vl_concurrency() == grading.DEFAULT_VL_CONCURRENCY
+
+
 
 def test_graded_by_strings_are_exactly_the_documented_values():
     """Section 7 freezes these. A typo here silently breaks C's provenance column."""
@@ -245,18 +301,22 @@ def test_pixel_mapping_round_trips(tmp_path):
 def test_tile_caption_prefers_a_real_model_caption(tmp_path, datadir, no_xview2, fake_vl):
     """A6 forbids a second VLM call, so the tile caption is picked, not generated."""
     graded = grading.outline_and_grade(_tile(tmp_path / "t.jpg"), BOUNDS, vl_budget_override=2)
-    caption, by = grading.tile_caption(graded)
+    caption, by, anchor = grading.tile_caption(graded)
 
     assert caption == fake_vl["caption"]
     assert by == grading.GRADED_BY_VL
+    # The anchor names the building the caption is about, so the archive dot can sit
+    # on that structure instead of the tile's geometric centre.
+    assert anchor in {b.footprint_id for b in graded}
 
     fake_vl["fail"] = True
     stub_graded = grading.outline_and_grade(
         _tile(tmp_path / "t2.jpg"), BOUNDS, vl_budget_override=2
     )
-    stub_caption, stub_by = grading.tile_caption(stub_graded)
+    stub_caption, stub_by, stub_anchor = grading.tile_caption(stub_graded)
     assert stub_by == grading.GRADED_BY_STUB
     assert vlm.STUB_CAPTION in stub_caption
+    assert stub_anchor in {b.footprint_id for b in stub_graded}
 
 
 def test_stub_caption_never_reads_as_an_observation():
@@ -363,7 +423,14 @@ def test_road_relative_label_when_no_address_exists(datadir):
     building = FakeBuilding([-122.3962, 47.5540])
     datasets.join([building], BOUNDS)
 
-    assert building.label == "unnamed structure near 35th Ave SW"
+    # "structure on <road>" rather than "unnamed structure near <road>": an operator
+    # dispatches to a street, and the word "unnamed" told them nothing except that
+    # the data was thin. "on" within 40 m, "off" beyond it, so the wording carries
+    # the distance.
+    assert building.label in (
+        "structure on 35th Ave SW",
+        "structure off 35th Ave SW",
+    )
 
 
 def test_label_never_returns_a_raw_id(datadir):
@@ -825,3 +892,88 @@ def test_grade_confidence_drops_when_grade_and_caption_disagree(tmp_path, monkey
     agreeing = answer(3, "structure destroyed, collapsed into rubble")
     contradicting = answer(1, "structure destroyed, collapsed into rubble")
     assert contradicting < agreeing
+
+
+def test_throughput_is_measured_from_the_token_counts_the_server_returns(monkeypatch):
+    """The status strip must report tok/s once a model has answered.
+
+    The servers return `usage.completion_tokens` on every response and we were
+    discarding it, so the strip read "models not measured yet" on a box that had
+    just run hundreds of generations. Fed through the real recording path with a
+    known token count and a known elapsed time, the median must come back.
+    """
+    vlm._THROUGHPUT.clear()
+    # 200 tokens in 2 s is 100 tok/s, twice, so the median is unambiguous.
+    vlm._note_throughput("lightning", {"usage": {"completion_tokens": 200}}, 2.0)
+    vlm._note_throughput("lightning", {"usage": {"completion_tokens": 100}}, 1.0)
+    assert vlm.tokens_per_s() == {"lightning": 100.0}
+
+    # A different model is tracked separately, never averaged together: they run on
+    # different servers at different sizes.
+    vlm._note_throughput("nano", {"usage": {"completion_tokens": 48}}, 2.0)
+    assert vlm.tokens_per_s() == {"lightning": 100.0, "nano": 24.0}
+    vlm._THROUGHPUT.clear()
+
+
+def test_throughput_ignores_tiny_replies_and_never_raises(monkeypatch):
+    """A short reply is prefill, not decode, and a malformed one is not an error.
+
+    A handful of tokens is dominated by time-to-first-token, so counting those would
+    understate the steady-state rate the strip claims to show. And a HUD number must
+    never be able to fail a grade, so a response missing usage is dropped quietly.
+    """
+    vlm._THROUGHPUT.clear()
+    vlm._note_throughput("nano", {"usage": {"completion_tokens": 3}}, 1.0)  # too short
+    vlm._note_throughput("nano", {}, 1.0)  # no usage block
+    vlm._note_throughput("nano", None, 1.0)  # no response at all
+    vlm._note_throughput(None, {"usage": {"completion_tokens": 500}}, 1.0)  # no model
+    vlm._note_throughput("nano", {"usage": {"completion_tokens": 500}}, 0.0)  # no time
+    assert vlm.tokens_per_s() == {}
+
+    # The window is bounded, so an old cold call cannot drag the number forever.
+    for _ in range(40):
+        vlm._note_throughput("nano", {"usage": {"completion_tokens": 100}}, 1.0)
+    assert len(vlm._THROUGHPUT["nano"]) <= 24
+    vlm._THROUGHPUT.clear()
+
+
+def test_empty_ground_reports_no_buildings_instead_of_inventing_a_grid(
+    tmp_path, datadir, no_xview2, fake_vl
+):
+    """A tile over open ground must yield NO buildings.
+
+    This used to fall through to a synthetic 4x3 grid whenever the footprint layer
+    returned nothing, so a frame of woodland - nearest real footprint 238 m away -
+    produced twelve identical 15.9 x 21.0 m rectangles, and the address join then
+    labelled them off the nearest road. A rescue list that sends a fire crew to
+    "1620 FLORIDA AVE" for a building that is not there is worse than a short list.
+
+    Coverage exists and the frame is empty: that is an answer, not a gap to fill.
+    """
+    # Coverage EXISTS - a footprint layer with real buildings in it - but none of
+    # them fall under the tile being graded. That is the real-world case: the
+    # Pinellas layer covers the whole county and a frame of woodland still has
+    # nothing in it.
+    (datadir / "footprints.geojson").write_text(
+        _fc(
+            [
+                {
+                    "type": "Feature",
+                    "geometry": _poly(-122.3980, 47.5540, -122.3975, 47.5545),
+                    "properties": {"PIN": "1", "ADDR_FULL": "4512 35th Ave SW"},
+                }
+            ]
+        )
+    )
+    datasets.reset_cache()
+
+    # A tile far from that footprint: open ground.
+    empty = [-122.300, 47.400, -122.299, 47.401]
+    graded = grading.outline_and_grade(_tile(tmp_path / "empty.jpg"), empty)
+
+    assert graded == [], f"invented {len(graded)} buildings on open ground"
+    assert grading.outline_source() == grading.OUTLINE_NONE
+
+    # And the honest answer is distinguishable from "we have no map at all", which
+    # is the only case where a labelled placeholder grid is still legitimate.
+    assert grading.OUTLINE_NONE != grading.OUTLINE_GRID

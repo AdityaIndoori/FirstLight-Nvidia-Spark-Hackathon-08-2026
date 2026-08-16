@@ -382,6 +382,39 @@ def test_withheld_tile_still_contributes_buildings_and_moves_to_the_vault(
     assert "person signal" not in joined
 
 
+def test_withhold_reaches_the_stage_card_but_never_the_log(sandbox, stub_pipeline):
+    """Two audiences, two rules, one withhold.
+
+    The operator's stage card MUST name what the gate did, or the one place they
+    look to see whether an image was stored reads "ok" while the tile was refused.
+    The decision-log export is unauthenticated, so the same reason MUST NOT appear
+    there: naming the detection is itself a disclosure about the withheld frame.
+    Regression guard for both halves at once, because fixing either one by itself
+    is what broke the other.
+    """
+    stub_pipeline["store"] = (False, "person signal: 3 detections")
+    img = _img(config.WATCH_DIR / "gate.png")
+    geo.write_sidecar(img, [-122.40, 47.54, -122.38, 47.56])
+
+    rec = ingest.analyze_tile(img)
+    stages = ingest.stages_of(rec)
+
+    # Visible to the operator, with the reason.
+    assert stages.store.startswith("withheld")
+    assert "person signal: 3 detections" in stages.store
+    assert stages.store != "ok"
+
+    # A refusal is not an error: it must not surface as a stage failure, which is
+    # the field that reaches the export.
+    assert stages.failed() is None
+
+    payloads = " ".join(r["payload"] for r in db.q("SELECT payload FROM decision_log"))
+    assert "person signal" not in payloads
+    assert "3 detections" not in payloads
+    assert "gate.png" not in payloads
+
+
+
 def test_needs_geo_tile_is_accepted_not_dropped(sandbox, stub_pipeline):
     img = _img(config.WATCH_DIR / "nogeo.png")
     rec = ingest.analyze_tile(img)

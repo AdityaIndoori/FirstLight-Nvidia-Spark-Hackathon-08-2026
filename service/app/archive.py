@@ -110,7 +110,8 @@ _TAG_RES = tuple((tag, re.compile(rx, re.IGNORECASE)) for tag, rx in _TAG_VOCAB)
 
 _ARCHIVE_COLS = (
     "image_id, filename, thumb_path, captured_at, centroid_json, needs_geo, "
-    "caption, caption_by, tags_json, class_max, key_evidence, embedding, footprints_json"
+    "caption, caption_by, tags_json, class_max, key_evidence, embedding, footprints_json, "
+    "caption_anchor"
 )
 
 
@@ -245,7 +246,7 @@ def _try_store(
         _evict_keeping_reason(_image_id(path), "gate", reason)
         return False, reason
 
-    caption, caption_by = _tile_caption(blds)
+    caption, caption_by, caption_anchor = _tile_caption(blds)
     if caption_mentions_person(caption):
         reason = "caption-person-language"
         _gate_log(verdict, {"stored": False, "channel": "caption"})
@@ -267,6 +268,7 @@ def _try_store(
             caption=caption,
             caption_by=caption_by,
             tags=tags,
+            caption_anchor=caption_anchor,
             vec=vec,
         )
     except Exception as exc:
@@ -313,31 +315,35 @@ def add_via_ingest_door(upload_path: Path) -> contracts.TileRecord:
     return rec
 
 
-def _tile_caption(buildings: list[Any]) -> tuple[str, str]:
+def _tile_caption(buildings: list[Any]) -> tuple[str, str, Optional[str]]:
     """One caption per image, reusing the VL pass the grader already paid for.
 
     A6 is explicit: never call the VLM twice per crop. The grader owns the
-    caption; the archive borrows it.
+    caption; the archive borrows it. The third element is the footprint the caption
+    describes, so the archive dot can be placed on that building.
     """
     try:
         from . import grading
 
         picker = getattr(grading, "tile_caption", None)
         if callable(picker):
-            caption, caption_by = picker(buildings)
-            return (caption or ""), (caption_by or "unknown")
+            picked = picker(buildings)
+            # A patched grader in a test may still return the old 2-tuple.
+            caption, caption_by = picked[0], picked[1]
+            anchor = picked[2] if len(picked) > 2 else None
+            return (caption or ""), (caption_by or "unknown"), anchor
     except Exception:
         pass
     # Standalone fallback with the same rule: describe the worst thing in frame.
-    best, best_cls = "", -1
+    best, best_cls, best_id = "", -1, None
     for b in buildings:
         cap = (getattr(b, "caption", "") or "").strip()
         cls = int(getattr(b, "cls", 0) or 0)
         if cap and cls > best_cls:
-            best, best_cls = cap, cls
+            best, best_cls, best_id = cap, cls, getattr(b, "footprint_id", None)
     if best:
-        return best, str(getattr(buildings[0], "graded_by", "unknown"))
-    return "", "none"
+        return best, str(getattr(buildings[0], "graded_by", "unknown")), best_id
+    return "", "none", None
 
 
 def _extract_tags(caption: str) -> list[str]:
@@ -388,19 +394,65 @@ def _unique_in(folder: Path, name: str) -> Path:
     return folder / f"{stem}-{n}{suffix}"
 
 
-def _centroid_for(tile_record: Any, buildings: list[Any]) -> Optional[list[float]]:
+def _centroid_for(
+    tile_record: Any, buildings: list[Any], anchor_id: Optional[str] = None
+) -> Optional[list[float]]:
+    """Where the archive dot goes.
+
+    WHY not the tile centre, which is what this used to return unconditionally: a
+    tile is ~525 m square and holds tens of buildings, so its geometric centre lands
+    wherever the arithmetic falls - routinely on a parking lot, a retention pond or
+    a road. An operator clicking that dot got a photo captioned "partial collapse
+    and large roof holes" centred on empty asphalt, because the dot and the caption
+    were describing different things.
+
+    So the dot anchors on the building the caption is ABOUT (anchor_id, the one
+    tile_caption picked), falling back to the worst-graded building, then to the
+    mean of the footprints, and only then to the tile centre for a tile with no
+    footprints at all.
+    """
+    def _pt(b: Any) -> Optional[list[float]]:
+        c = getattr(b, "centroid", None)
+        if c and len(c) == 2:
+            try:
+                return [round(float(c[0]), 6), round(float(c[1]), 6)]
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    if anchor_id:
+        for b in buildings:
+            if getattr(b, "footprint_id", None) == anchor_id:
+                p = _pt(b)
+                if p:
+                    return p
+
+    # No named anchor: the worst thing in the frame is what the caption would have
+    # described anyway, so land on that rather than on the average of everything.
+    graded = [b for b in buildings if _pt(b)]
+    if graded:
+        worst = max(
+            graded,
+            key=lambda b: (
+                int(getattr(b, "cls", 0) or 0),
+                float(getattr(b, "conf", 0.0) or 0.0),
+                float(getattr(b, "area_m2", 0.0) or 0.0),
+            ),
+        )
+        return _pt(worst)
+
+    pts = [p for p in (_pt(b) for b in buildings) if p]
+    if pts:
+        return [
+            round(sum(p[0] for p in pts) / len(pts), 6),
+            round(sum(p[1] for p in pts) / len(pts), 6),
+        ]
+
     bounds = getattr(tile_record, "bounds", None)
     if bounds and len(bounds) == 4:
         w, s, e, n = (float(x) for x in bounds)
         return [round((w + e) / 2.0, 6), round((s + n) / 2.0, 6)]
-    pts = [getattr(b, "centroid", None) for b in buildings]
-    pts = [p for p in pts if p and len(p) == 2]
-    if not pts:
-        return None
-    return [
-        round(sum(float(p[0]) for p in pts) / len(pts), 6),
-        round(sum(float(p[1]) for p in pts) / len(pts), 6),
-    ]
+    return None
 
 
 def _insert(
@@ -414,6 +466,7 @@ def _insert(
     caption_by: str,
     tags: list[str],
     vec: np.ndarray,
+    caption_anchor: Optional[str] = None,
 ) -> None:
     """Write the row. Only reachable with a cleared gate verdict above it."""
     prior = db.q1("SELECT caption, caption_by, key_evidence FROM archive WHERE image_id=?", (image_id,))
@@ -427,10 +480,10 @@ def _insert(
     classes = [int(getattr(b, "cls", 0) or 0) for b in buildings]
     footprints = [str(getattr(b, "footprint_id", "")) for b in buildings]
     footprints = [f for f in footprints if f]
-    centroid = _centroid_for(tile_record, buildings)
+    centroid = _centroid_for(tile_record, buildings, caption_anchor)
     db.run(
         f"INSERT OR REPLACE INTO archive ({_ARCHIVE_COLS}) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             image_id,
             filename,
@@ -445,6 +498,7 @@ def _insert(
             key_evidence,
             np.asarray(vec, dtype=np.float32).tobytes(),
             json.dumps(footprints),
+            caption_anchor,
         ),
     )
     db.log(
@@ -983,6 +1037,17 @@ def semantic_floor() -> float:
     return 0.5
 
 
+def _col(row: sqlite3.Row, name: str) -> Optional[str]:
+    """A column that may be absent from an older row object. Selects elsewhere in
+    this module name columns explicitly, and a stale prepared query would otherwise
+    turn a schema addition into an IndexError on read."""
+    try:
+        value = row[name]
+    except (IndexError, KeyError):
+        return None
+    return str(value) if value else None
+
+
 def _item(row: sqlite3.Row) -> contracts.ArchiveItem:
     return contracts.ArchiveItem(
         image_id=row["image_id"],
@@ -995,6 +1060,7 @@ def _item(row: sqlite3.Row) -> contracts.ArchiveItem:
         class_max=int(row["class_max"] or 0),
         key_evidence=bool(row["key_evidence"]),
         footprint_ids=db.jload(row["footprints_json"], []) or [],
+        caption_anchor=_col(row, "caption_anchor"),
     )
 
 

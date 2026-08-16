@@ -64,10 +64,33 @@ const CSS = `
 .dp-printa { border:1px solid currentColor; background:transparent; color:inherit; border-radius:4px;
   font-size:11px; padding:2px 8px; cursor:pointer; font-family:inherit; opacity:.85; }
 .dp-printa:hover { opacity:1; }
-.dp-step { display:flex; align-items:center; gap:7px; padding:6px 8px;
+/* Two ROWS per step, not one row of six competing controls.
+
+   Row 1: the numeral and the address, which is what an operator reads and what a
+   crew is dispatched to, so it gets the full column width.
+   Row 2: units, Nav, reassign and reorder, which are actions taken after reading.
+
+   The single-row version squeezed the address into whatever the controls left
+   over, which in a 400 px column was about 90 px: "801 W 13TH ST" wrapped onto
+   three lines and every step stood 140 px tall. */
+.dp-step { display:grid; grid-template-columns:22px minmax(0, 1fr); gap:4px 7px;
+  padding:7px 8px; align-items:start;
   border:1px solid var(--line,#1f2733); border-top:0; font-size:13px; background:var(--panel,#11161f); }
+.dp-task { grid-column:2; display:flex; flex-direction:column; gap:1px; min-width:0; }
+.dp-where { color:var(--ink,#dde6ee); font-weight:600; line-height:1.35; }
+.dp-what { color:var(--dim,#8899aa); font-size:11.5px; line-height:1.3; }
+/* Coordinates under the address: monospace so digits align down the column and a
+   crew reading them aloud does not lose their place, and dimmer than the task so it
+   reads as reference rather than instruction. */
+.dp-geo { color:var(--dim,#8899aa); font:11px/1.35 Consolas,"Cascadia Mono",monospace;
+  letter-spacing:0.2px; cursor:pointer; width:fit-content; }
+.dp-geo:hover { color:var(--blue,#4cc2ff); }
+.dp-many { color:var(--amber,#ffb84c); font-size:10.5px; line-height:1.3; }
+/* The action row spans both columns and sits under the address. */
+.dp-acts { grid-column:1 / -1; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
 .dp-num { width:22px; height:22px; border-radius:50%; color:var(--bg,#0a0d12);
-  font:700 12px/22px "Segoe UI",system-ui,sans-serif; text-align:center; flex:none; }
+  font:700 12px/22px "Segoe UI",system-ui,sans-serif; text-align:center; flex:none;
+  grid-column:1; grid-row:1; }
 /* The numeral is a filled circle, so the shared .tip underline does not belong. */
 .dp-num.tip { border-bottom:0; }
 .dp-num.tip-open { overflow:visible; }
@@ -445,6 +468,22 @@ function bold(v) {
   return b;
 }
 
+/** Select an element's text so Ctrl+C works. The console is served over plain HTTP,
+ *  where navigator.clipboard is unavailable, and "click to copy" that silently does
+ *  nothing is worse than no affordance at all. */
+function selectText(el) {
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    ctx.toast("Selected the coordinates, press Ctrl+C to copy.", "ok");
+  } catch (err) {
+    /* selection is a convenience, never an error path */
+  }
+}
+
 function renderStep(group, step, idx, color) {
   const row = document.createElement("div");
   row.className = "dp-step";
@@ -458,29 +497,86 @@ function renderStep(group, step, idx, color) {
     "numeral renumbers, logged under your name.";
   row.appendChild(n);
 
+  // Address on its own line, task beneath it. Concatenating them into one span put
+  // "structure damage assessment" between an operator and the street name, and in a
+  // 400 px column the whole thing wrapped to ten lines per step.
   const task = document.createElement("span");
   task.className = "dp-task";
-  const text = step.label
-    ? step.label + (step.task ? " - " + step.task : "")
-    : step.task || step.footprint_id || "unlabelled step";
-  task.textContent = text;
-  task.title = text;
+  const where = document.createElement("span");
+  where.className = "dp-where";
+  where.textContent = step.label || step.footprint_id || "unlabelled step";
+  task.appendChild(where);
+  if (step.task) {
+    const what = document.createElement("span");
+    what.className = "dp-what";
+    what.textContent = step.task;
+    task.appendChild(what);
+  }
+  // Coordinates under the address. A street label is what a crew reads, but the
+  // grid reference is what they type into a handheld or read over the radio, and
+  // several of these steps have no address at all - "unnamed structure near
+  // Florida Ave" is not somewhere you can drive to. Five decimals is about a metre,
+  // which is the precision the geometry actually supports.
+  if (Array.isArray(step.centroid) && step.centroid.length >= 2) {
+    const lng = Number(step.centroid[0]);
+    const lat = Number(step.centroid[1]);
+    if (isFinite(lng) && isFinite(lat)) {
+      const geo = document.createElement("span");
+      geo.className = "dp-geo";
+      geo.textContent = lat.toFixed(5) + ", " + lng.toFixed(5);
+      geo.title = "latitude, longitude of this stop. Click to copy.";
+      geo.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const text = lat.toFixed(5) + ", " + lng.toFixed(5);
+        // Clipboard access needs a secure context, and this console is served over
+        // plain HTTP on the box, so the fallback is not optional.
+        const done = () => ctx.toast("Copied " + text, "ok");
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(text).then(done, () => selectText(geo));
+        } else {
+          selectText(geo);
+        }
+      });
+      task.appendChild(geo);
+    }
+  }
+  if (Number(step.structures) > 1) {
+    const many = document.createElement("span");
+    many.className = "dp-many";
+    many.textContent = step.structures + " structures, one park-up";
+    many.title =
+      "buildings within walking distance are one assignment, so a crew parks once " +
+      "instead of driving between neighbours";
+    task.appendChild(many);
+  }
+  task.title = (step.label || "") + (step.task ? " - " + step.task : "");
   row.appendChild(task);
+
+  // Everything below the address goes in one action row spanning the full column,
+  // so the address is never squeezed by six controls competing for the same line.
+  const acts = document.createElement("span");
+  acts.className = "dp-acts";
 
   const u = document.createElement("span");
   u.className = "dp-u tip";
   u.textContent = step.units + (step.units === 1 ? " unit" : " units");
   u.title = "click to change the unit count for this step";
   u.addEventListener("click", () => editUnits(group, step, u));
-  row.appendChild(u);
+  acts.appendChild(u);
 
   const nav = document.createElement("button");
   nav.type = "button";
-  nav.className = "mini";
-  nav.textContent = "Nav";
-  nav.title = "turn-by-turn that avoids blocked roads";
+  // The button carries its own state. Without this it looks identical whether the
+  // route is drawn or not, so an operator cannot tell the click did anything and
+  // clicks again, which toggles the route back off.
+  const navOpen = openRoutes.has(stepKey(step));
+  nav.className = navOpen ? "mini on" : "mini";
+  nav.textContent = navOpen ? "Nav on" : "Nav";
+  nav.title = navOpen
+    ? "hide this route and its turn-by-turn"
+    : "draw the route on the map, centre on it, and show turn-by-turn that avoids blocked roads";
   nav.addEventListener("click", () => toggleRoute(group, step));
-  row.appendChild(nav);
+  acts.appendChild(nav);
 
   const sel = document.createElement("select");
   sel.className = "dp-sel";
@@ -493,15 +589,18 @@ function renderStep(group, step, idx, color) {
     sel.appendChild(o);
   }
   sel.addEventListener("change", () => reassign(group, idx, sel.value, sel));
-  row.appendChild(sel);
+  acts.appendChild(sel);
 
   const ctl = document.createElement("span");
   ctl.className = "dp-ctl";
+  ctl.style.marginLeft = "auto";
   const up = mkCtl("up", "\u25b2", "move up", () => move(group, idx, -1));
   const dn = mkCtl("dn", "\u25bc", "move down", () => move(group, idx, 1));
   const del = mkCtl("del", "\u2715", "remove this step", () => remove(group, idx));
   ctl.append(up, dn, del);
-  row.appendChild(ctl);
+  acts.appendChild(ctl);
+
+  row.appendChild(acts);
   return row;
 }
 
@@ -526,7 +625,18 @@ function move(group, idx, delta) {
   group.steps.splice(to, 0, step);
   renumber(group);
   render(); // Numerals renumber before the request leaves.
-  postEdit(group.agency, "move", fromN, { to_n: to + 1, footprint_id: step.footprint_id });
+
+  // Persist the WHOLE agency's order, not just the stop that moved. The server
+  // replays operator ordering over a freshly drafted plan, so a lone order_key on
+  // one stop would leave its neighbours in draft order and the move would appear to
+  // half-apply on the next poll.
+  group.steps.forEach((s, i) => {
+    postEdit(group.agency, "move", s === step ? fromN : s.n, {
+      footprint_id: s.footprint_id,
+      order_key: i,
+      to_n: i + 1,
+    });
+  });
 }
 
 function remove(group, idx) {

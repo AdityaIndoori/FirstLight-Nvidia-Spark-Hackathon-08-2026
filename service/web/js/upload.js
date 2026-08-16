@@ -78,6 +78,8 @@ let ctx = null;
 let host = null;
 let sumEl = null;
 let pollTimer = null;
+// Repaints the elapsed-seconds counter without touching the network.
+let tickTimer = null;
 let inFlight = 0;
 
 /** Cards keyed by normalized file name. A refresh patches them, never rebuilds. */
@@ -181,6 +183,16 @@ function withheldText(reason) {
   return reason || "privacy gate refused storage";
 }
 
+/** "on the box · 6s" while a tile is being analysed, and an honest note once it
+ *  runs past the measured envelope. Measured p50 is 14 s end to end over six real
+ *  frames, worst case 18 s, so 25 s is where "slower than expected" is fair to say
+ *  rather than alarmist. */
+function elapsedNote(card) {
+  const secs = Math.max(0, Math.round((Date.now() - (card.at || Date.now())) / 1000));
+  if (secs >= 25) return "on the box · " + secs + "s, slower than the usual 14s";
+  return "on the box · " + secs + "s";
+}
+
 /**
  * Derive the three stage rows from a TileRecord.
  *
@@ -189,9 +201,13 @@ function withheldText(reason) {
  */
 function stagesFor(card) {
   const pending = (lab, n) => ({ state: "pending", lab, n: n || "" });
+  // "uploading" covers the whole POST, and the POST is where the work happens:
+  // the server analyses the tile before it answers, so this is the branch an
+  // operator watches for ~14 s. It gets the counter too, otherwise the card reads
+  // a motionless "sending" for the entire analysis.
   if (card.phase === "uploading")
     return [
-      { state: "busy", lab: "1 analyzing (outlines + grades)", n: "sending" },
+      { state: "busy", lab: "1 analyzing (outlines + grades)", n: elapsedNote(card) },
       pending("2 indexing (join, doubt, caption)"),
       pending("3 storage decision (privacy gate)"),
     ];
@@ -205,7 +221,11 @@ function stagesFor(card) {
   const rec = card.record;
   if (!rec)
     return [
-      { state: "busy", lab: "1 analyzing (outlines + grades)", n: "on the box" },
+      // Elapsed seconds against the measured expectation. A tile is ~14 s of real
+      // work on this box (privacy gate, VL grading, k=8 ballot, join, archive), and
+      // a card that only says "on the box" for that long is indistinguishable from
+      // one that has hung. Counting up, with the budget named, makes the wait legible.
+      { state: "busy", lab: "1 analyzing (outlines + grades)", n: elapsedNote(card) },
       pending("2 indexing (join, doubt, caption)"),
       pending("3 storage decision (privacy gate)"),
     ];
@@ -223,7 +243,13 @@ function stagesFor(card) {
     : {
         state: "done",
         lab: "1 analyzing (outlines + grades)",
-        n: nb + " buildings outlined, " + sev + " severe",
+        // Zero buildings on a tile that analysed fine is open ground, not a
+        // failure, and saying "0 buildings outlined" invites the operator to read
+        // it as one. The footprint layer covering this AOI and finding nothing here
+        // is a real answer worth stating plainly.
+        n: nb
+          ? nb + " buildings outlined, " + sev + " severe"
+          : "no buildings in frame (open ground)",
       };
 
   const s2 = failed
@@ -508,8 +534,40 @@ function paintRail(tiles) {
 
 // ---------------------------------------------------------------- upload flow
 function addFiles(fileList) {
-  const files = Array.from(fileList || []);
-  if (!files.length) return;
+  const all = Array.from(fileList || []);
+  if (!all.length) return;
+
+  // Only imagery gets a progress card. A `.bounds.json` is the LOCATION for the
+  // image beside it, and `MANIFEST.json` / `README.md` are neither: anything that
+  // is not an image would otherwise mount a card that polls forever for a tile
+  // record the server will never write, sitting on "ANALYZING" until the
+  // three-minute timeout. Classify by extension, and treat every non-image,
+  // non-sidecar file as something the operator picked by accident.
+  const sidecars = new Map();
+  const files = [];
+  const ignored = [];
+  for (const f of all) {
+    const name = String(f.name || "");
+    if (/\.bounds\.json$/i.test(name)) {
+      sidecars.set(name.replace(/\.bounds\.json$/i, "").toLowerCase(), f);
+    } else if (/\.(jpe?g|png|tiff?|webp|jp2)$/i.test(name)) {
+      files.push(f);
+    } else {
+      ignored.push(name);
+    }
+  }
+  if (ignored.length) {
+    ctx.toast(
+      "Ignored " + ignored.length + " non-image file" + (ignored.length > 1 ? "s" : "")
+        + " (" + ignored.slice(0, 3).join(", ") + "). Only imagery is analysed.",
+      "warn"
+    );
+  }
+  if (!files.length) {
+    ctx.toast("No imagery in that selection. Pick the .jpg files too.", "warn");
+    return;
+  }
+
   const who = ctx.operator();
   for (const f of files) {
     const key = baseName(f.name);
@@ -526,6 +584,11 @@ function addFiles(fileList) {
       cards.set(key, card);
       mountCard(card);
     }
+    // Matched on the full filename and on the stem, because exporters disagree
+    // about whether the sidecar keeps the image extension. Both sides lowercased:
+    // Windows hands back the case from disk, which need not match the image.
+    const lower = String(f.name || "").toLowerCase();
+    card.sidecar = sidecars.get(lower) || sidecars.get(lower.replace(/\.[^.]+$/, "")) || null;
     card.operator = who;
     paintCard(card);
     sendOne(card);
@@ -540,6 +603,9 @@ function addFiles(fileList) {
  */
 async function sendOne(card) {
   const fd = new FormData();
+  // Sidecar FIRST: the server writes bounds before it analyses the image, so the
+  // geo chain finds them on the same request rather than on a later re-analyse.
+  if (card.sidecar) fd.append("files", card.sidecar, card.sidecar.name);
   fd.append("files", card.file, card.name);
   inFlight += 1;
   try {
@@ -571,9 +637,17 @@ function shortErr(err) {
 
 function matchRecord(recs, card) {
   const stem = stemOf(card.name);
+  // A tile row for THIS upload, never the previous one for the same filename.
+  // Re-uploading is deliberately not deduplicated (the privacy gate must re-run),
+  // so /api/tiles legitimately holds an older row under the same name until the
+  // new one is written. Matching that stale row painted the card with the previous
+  // verdict - "no location yet" on a tile whose sidecar had just resolved fine.
+  // A couple of seconds of slack absorbs clock skew between box and browser.
+  const floor = (card.at || 0) / 1000 - 5;
   let loose = null;
   for (const r of recs) {
     if (!r || !r.filename) continue;
+    if (r.captured_at && r.captured_at < floor) continue;
     const b = baseName(r.filename);
     if (b === card.key) return r;
     if (!loose && stem && b.includes(stem)) loose = r;
@@ -589,6 +663,9 @@ function applyRecord(card, rec) {
 
 function pendingCards() {
   const out = [];
+  // A card that already has its record is DONE. The POST response is authoritative
+  // and arrives before the next list poll, so anything still listed as pending
+  // after that would let a slower, staler source repaint a finished verdict.
   for (const c of cards.values()) if (c.phase !== "upload-failed" && !c.record) out.push(c);
   return out;
 }
@@ -599,6 +676,21 @@ function startPoll() {
     if (pendingCards().length) refresh();
     else stopPoll();
   }, POLL_MS);
+  // A separate, cheaper tick for the elapsed-seconds counter. The record poll is
+  // an HTTP round trip and runs every 2.5 s; a counter that only moves that often
+  // reads as stuttering, and hitting the API every second to animate a label would
+  // be wasteful. This one touches no network.
+  if (!tickTimer) {
+    tickTimer = setInterval(() => {
+      const pend = pendingCards();
+      if (!pend.length) {
+        clearInterval(tickTimer);
+        tickTimer = null;
+        return;
+      }
+      for (const card of pend) paintCard(card);
+    }, 1000);
+  }
 }
 
 function stopPoll() {
@@ -619,11 +711,15 @@ async function refresh() {
   const pend = pendingCards();
   for (const card of pend) {
     const rec = matchRecord(tiles, card);
-    if (rec) applyRecord(card, rec);
-    else if (Date.now() - card.at > CARD_TIMEOUT_MS && !card.timedOut) {
-      card.timedOut = true;
-      paintCard(card);
+    if (rec) {
+      applyRecord(card, rec);
+      continue;
     }
+    if (Date.now() - card.at > CARD_TIMEOUT_MS && !card.timedOut) card.timedOut = true;
+    // Repaint every tick, not only on timeout: the analysing row shows elapsed
+    // seconds, and a frozen counter is exactly the "is it stuck?" question the
+    // counter exists to answer.
+    paintCard(card);
   }
   if (pend.length) paintSummary();
   if (pendingCards().length) startPoll();

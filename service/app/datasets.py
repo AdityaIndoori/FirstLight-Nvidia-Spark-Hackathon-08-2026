@@ -174,15 +174,17 @@ _NAME_KEYS = (
     "ROAD",
     "label",
 )
+# Order matters: the FIRST key present wins, so the PHYSICAL site address comes
+# before any generic one. Florida's statewide parcel layer ships PHY_ADDR1 (the
+# building's own address) alongside OWN_ADDR1 (where the owner receives post,
+# frequently another state entirely). A generic "ADDR1" match would take the owner
+# field, which is both wrong for dispatch and a privacy leak, so owner variants are
+# dropped by the scrub and never appear in this list.
 _ADDRESS_KEYS = (
-    "address",
-    "ADDRESS",
-    "addr",
-    "ADDR",
-    "full_address",
-    "FULL_ADDRESS",
-    "addr_full",
-    "ADDR_FULL",
+    "PHY_ADDR1",
+    "phy_addr1",
+    "PHYSICAL_ADDRESS",
+    "SITE_ADDRESS",
     "site_address",
     "SITEADDRESS",
     "situs_address",
@@ -190,6 +192,14 @@ _ADDRESS_KEYS = (
     "situsaddress",
     "street_address",
     "STREET_ADDRESS",
+    "full_address",
+    "FULL_ADDRESS",
+    "addr_full",
+    "ADDR_FULL",
+    "address",
+    "ADDRESS",
+    "addr",
+    "ADDR",
     "addr1",
     "ADDR1",
     "address_1",
@@ -764,6 +774,16 @@ def label_for(centroid: Optional[Sequence[float]], *, max_m: float = 60.0) -> st
     Order: the address on the nearest footprint, then the address of the nearest
     address-carrying parcel, then a road-relative description. Never a raw ID: an
     operator dispatches crews to streets, not to footprint hashes.
+
+    The parcel search is deliberately wider than the footprint search. A parcel
+    layer is frequently published as CENTROIDS, so the nearest parcel point sits in
+    the middle of a lot while the building sits at its edge, and a 60 m radius
+    tuned for polygon overlap misses an address that is plainly the right one.
+
+    The last resorts read as a street position rather than an apology: "structure
+    on Mulberry Avenue" is something a crew can act on, and even the coordinate
+    form drops the word "unnamed", which told an operator nothing except that the
+    data was thin.
     """
     if centroid is None:
         return "unlocated structure"
@@ -772,13 +792,16 @@ def label_for(centroid: Optional[Sequence[float]], *, max_m: float = 60.0) -> st
         addr = _footprint_address(fp)
         if addr:
             return addr
-    parcel, pd = _parcel_grid().nearest(centroid, max_m) if parcels() else (None, float("inf"))
-    if parcel is not None and pd <= max_m and parcel.address:
+    parcel_reach = max(max_m, 120.0)
+    parcel, pd = (
+        _parcel_grid().nearest(centroid, parcel_reach) if parcels() else (None, float("inf"))
+    )
+    if parcel is not None and pd <= parcel_reach and parcel.address:
         return parcel.address
-    road, _rd = nearest_road(centroid)
+    road, rd = nearest_road(centroid)
     if road:
-        return f"unnamed structure near {road}"
-    return f"unnamed structure at {centroid[1]:.5f}, {centroid[0]:.5f}"
+        return f"structure on {road}" if rd <= 40.0 else f"structure off {road}"
+    return f"structure at {centroid[1]:.5f}, {centroid[0]:.5f}"
 
 
 _COORD_RE = re.compile(r"(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)")

@@ -1,0 +1,16 @@
+Noto Sans (Regular), SIL Open Font License 1.1
+https://fonts.google.com/noto/specimen/Noto+Sans
+
+Signed-distance-field glyph ranges in MapLibre's `glyphs.proto` format, used to
+label roads on the offline basemap. Fetched once from
+https://demotiles.maplibre.org/font/Noto%20Sans%20Regular/{range}.pbf and committed
+so the box needs no glyph server and no network at run time.
+
+Ranges present:
+  0-255       Basic Latin + Latin-1 Supplement - every road name in the AOI
+  256-511     Latin Extended-A - accented names
+  8192-8447   General Punctuation - the en dash and directional quotes
+
+The OFL permits redistribution, including bundled with software, provided the
+licence travels with the font. Adding a range means fetching it on a networked
+machine and committing the .pbf; nothing here is generated on the box.

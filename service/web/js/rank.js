@@ -128,29 +128,46 @@ function isContested(item) {
 
 function formulaRow(item) {
   const inputs = (item && item.inputs) || {};
+
+  // The priority is the headline; the arithmetic lives in the tooltip. Fifty cards
+  // each carrying five factors of monospace buried the one number an operator
+  // sorts by, and gate 4 is still satisfied because the full working is one hover
+  // away and the mismatch check below still runs on every render whether anyone
+  // looks or not.
   const row = node('div', 'formula');
-  tip(row, TIP.formula);
   let product = 1;
-  let first = true;
+  let counted = 0;
+  const parts = [];
   for (const key of FACTOR_ORDER) {
     const raw = inputs[key];
     if (raw === undefined || raw === null) continue;
     const value = Number(raw);
     if (!isFinite(value)) continue;
     product *= value;
-    if (!first) row.appendChild(document.createTextNode(' x '));
-    first = false;
-    row.appendChild(document.createTextNode(DISPLAY_NAME[key] + ' '));
-    row.appendChild(node('b', null, num(value, 3)));
+    counted += 1;
+    parts.push(DISPLAY_NAME[key] + ' ' + num(value, 3));
   }
-  row.appendChild(document.createTextNode(' = ' + DISPLAY_NAME.priority + ' '));
-  const shown = Number(item.priority);
-  row.appendChild(node('b', 'prod', isFinite(shown) ? num(shown, 5) : '-'));
 
-  // Verify the arithmetic on screen rather than trusting it. A mismatch is a
-  // real defect in the scorer and the operator should see it, not discover it
-  // when a judge multiplies the row by hand.
-  if (isFinite(shown) && !first && Math.abs(Number(product.toFixed(5)) - shown) > 0.00002) {
+  const shown = Number(item.priority);
+  row.appendChild(node('span', 'flab', DISPLAY_NAME.priority));
+  row.appendChild(node('b', 'prod', isFinite(shown) ? num(shown, 5) : '-'));
+  if (counted) {
+    row.appendChild(node('span', 'fhint', 'how'));
+    tip(
+      row,
+      parts.join(' x ') + ' = ' + num(product, 5) + '. '
+        + 'Each factor is rounded to three decimals before multiplying, so this '
+        + 'reconciles by hand. Property value never enters it.'
+    );
+  } else {
+    tip(row, TIP.formula);
+  }
+
+  // Verify the arithmetic on screen rather than trusting it. A mismatch is a real
+  // defect in the scorer and the operator should see it, not discover it when a
+  // judge multiplies the row by hand. This stays visible even though the working
+  // is now hidden: a hidden formula is fine, a hidden discrepancy is not.
+  if (isFinite(shown) && counted && Math.abs(Number(product.toFixed(5)) - shown) > 0.00002) {
     const warn = node('div', null, 'these factors multiply to ' + num(product, 5)
       + ', which does not match the priority sent');
     warn.style.color = 'var(--red)';

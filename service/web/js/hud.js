@@ -209,10 +209,27 @@ function paintTiles(s) {
 }
 
 function paintLatency(s) {
+  const n = Number(s.tile_latency_n) || 0;
+  // The service starts clean: no tiles until an operator uploads. Printing
+  // "0.0 s p50 (n=0)" for that state reads as a broken measurement rather than an
+  // honest absence, so say what is actually true.
+  if (!n) {
+    setText(
+      "strip-latency",
+      "per-tile not measured yet",
+      "no tiles have been graded under the current settings. Upload imagery and this " +
+        "becomes a median measured on this box, not a quoted figure."
+    );
+    return;
+  }
   setText(
     "strip-latency",
-    num(Number(s.tile_latency_ms_p50) / 1000, 1) + " s p50",
-    "median end to end per tile, measured on this Spark with every model warm"
+    num(Number(s.tile_latency_ms_p50) / 1000, 1) + " s p50" + (n < 8 ? " (n=" + n + ")" : ""),
+    "median end to end over " + n + " tile" + (n === 1 ? "" : "s") +
+      " graded under the current settings: privacy gate, VL grading, uncertainty " +
+      "ballot, vulnerability join and archive write. Scoped to the grading profile, " +
+      "so changing the VL budget starts a fresh measurement rather than averaging " +
+      "the old one in."
   );
 }
 

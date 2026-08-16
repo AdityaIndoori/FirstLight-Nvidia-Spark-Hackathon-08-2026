@@ -67,8 +67,18 @@ SOURCES: dict[str, dict[str, dict]] = {
     },
     "bay": {
         "parcels": {
-            "url": "https://services5.arcgis.com/EmDvrpQTOEsG9dtj/arcgis/rest/services/Parcels/FeatureServer/0/query",
-            "expect": 24187,
+            # The Florida GIO statewide layer, not a county service. Bay County's
+            # own Parcels FeatureServer answers HTTP 400 for every layer id, and
+            # the state layer covers every Florida AOI with one endpoint, which is
+            # also why it is the right tier for the next county after this one.
+            # PHY_ADDR1 is the physical site address, which is what a dispatch label
+            # needs; OWN_ADDR1 and OWN_CITY are owner fields and the scrub drops
+            # them.
+            "url": (
+                "https://services9.arcgis.com/Gh9awoU677aKree0/arcgis/rest/services/"
+                "Florida_Statewide_Parcel_Centroid_Version/FeatureServer/0/query"
+            ),
+            "expect": 24114,
             "note": "Michael 2018, the AOI with a true pre/post aerial pair",
         },
     },
@@ -105,7 +115,10 @@ def count(url: str, bbox: str) -> int | None:
         "f": "json",
     }
     try:
-        with urllib.request.urlopen(f"{url}?{urllib.parse.urlencode(params)}", timeout=45) as r:
+        # Generous: a statewide layer counting inside a bbox took 87 s measured,
+        # and a probe that times out reads as "endpoint unavailable" and skips a
+        # dataset that was in fact there.
+        with urllib.request.urlopen(f"{url}?{urllib.parse.urlencode(params)}", timeout=180) as r:
             body = json.load(r)
         if "error" in body:
             return None

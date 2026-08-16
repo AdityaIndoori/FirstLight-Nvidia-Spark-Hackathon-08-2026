@@ -1279,3 +1279,81 @@ def test_replan_percentiles_and_model_versions_report_the_path_that_ran(store, m
     ballot.vote_batch([FakeBuilding("b1", caption="c")], k=8)
     version = ballot.model_version()
     assert "k=8 ballot" in version and "measured" in version
+
+
+def _owner(plan: dict, fid: str):
+    for entry in plan["agencies"]:
+        for step in entry["steps"]:
+            if step["footprint_id"] == fid or fid in (step.get("footprint_ids") or []):
+                return entry["agency"], step["n"]
+    return None, None
+
+
+def test_a_reassign_survives_the_next_plan_poll(store):
+    """An operator edit must outlive the re-draft that happens two seconds later.
+
+    build_plan recomputes from the live ranking on every poll, so an edit recorded
+    only in the decision log was gone by the next refresh: the console showed the
+    reassign, then snapped the stop back to its drafted agency in front of the
+    operator. This is the regression guard for that, and it polls twice because
+    once would pass even with the edit held only in memory.
+    """
+    add_building("fp_1", cls=3, label="801 W 13TH ST", centroid=[-85.67, 30.17])
+    drafted_agency, _ = _owner(scorer.build_plan(), "fp_1")
+    assert drafted_agency is not None, "the fixture building must reach the plan"
+
+    target = "ems" if drafted_agency != "ems" else "police"
+    scorer.set_plan_override("fp_1", operator="R. Alvarez", agency=target)
+
+    for poll in range(3):
+        agency, _n = _owner(scorer.build_plan(), "fp_1")
+        assert agency == target, f"poll {poll + 1} reverted the reassign to {agency}"
+
+
+def test_a_deleted_stop_stays_deleted_and_reset_brings_it_back(store):
+    """Delete must persist, and the operator must be able to get the draft back."""
+    add_building("fp_1", cls=3, label="801 W 13TH ST", centroid=[-85.67, 30.17])
+    assert _owner(scorer.build_plan(), "fp_1")[0] is not None
+
+    scorer.set_plan_override("fp_1", operator="R. Alvarez", deleted=True)
+    assert _owner(scorer.build_plan(), "fp_1")[0] is None
+    assert _owner(scorer.build_plan(), "fp_1")[0] is None  # and again
+
+    # An operator who over-edits needs a way back to the drafted plan, otherwise a
+    # mistaken delete is unrecoverable mid-incident.
+    assert scorer.clear_plan_overrides("R. Alvarez") == 1
+    assert _owner(scorer.build_plan(), "fp_1")[0] is not None
+
+
+def test_overrides_compose_rather_than_overwriting_each_other(store):
+    """Reassign then reorder must not drop the reassign.
+
+    The edits arrive as separate requests keyed on the same footprint, so a plain
+    INSERT OR REPLACE that took only the newest field would silently undo the
+    earlier decision.
+    """
+    add_building("fp_1", cls=3, label="801 W 13TH ST", centroid=[-85.67, 30.17])
+    add_building("fp_2", cls=3, label="705 W 15TH ST", centroid=[-85.671, 30.171])
+
+    scorer.set_plan_override("fp_1", operator="R. Alvarez", agency="police")
+    scorer.set_plan_override("fp_1", operator="R. Alvarez", order_key=0)
+    scorer.set_plan_override("fp_1", operator="R. Alvarez", units=4)
+
+    agency, _n = _owner(scorer.build_plan(), "fp_1")
+    assert agency == "police", "the later order/units edits dropped the reassign"
+    step = next(
+        s
+        for e in scorer.build_plan()["agencies"]
+        for s in e["steps"]
+        if s["footprint_id"] == "fp_1"
+    )
+    assert step["units"] == 4
+
+
+def test_an_unknown_agency_is_refused_rather_than_stored(store):
+    """A typo must not create a fifth agency that no crew belongs to."""
+    add_building("fp_1", cls=3, centroid=[-85.67, 30.17])
+    with pytest.raises(ValueError):
+        scorer.set_plan_override("fp_1", operator="R. Alvarez", agency="coastguard")
+    with pytest.raises(ValueError):
+        scorer.set_plan_override("fp_1", operator="   ", agency="ems")

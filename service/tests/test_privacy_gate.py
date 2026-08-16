@@ -43,9 +43,17 @@ VEHICLE = 3  # VisDrone car, deliberately not a person class
 
 # ---------------------------------------------------------------- the verdict
 def test_person_above_threshold_withholds(tmp_path, monkeypatch):
-    """A person at or above the threshold means the image is never stored."""
+    """A person at or above the threshold means the image is never stored.
+
+    The fixture confidence is derived from the configured threshold rather than
+    written as a literal. A5 sets that threshold from measurement, so it moves, and
+    a hardcoded 0.41 quietly stopped testing "above the threshold" the moment the
+    measurement raised it to 0.50: the detection fell below the floor and the test
+    asserted the opposite of its own name.
+    """
+    above = config.GATE_CONF + 0.1
     monkeypatch.setattr(
-        privacy_gate, "_detect", lambda img, conf: [_det(PERSON, "pedestrian", 0.41)]
+        privacy_gate, "_detect", lambda img, conf: [_det(PERSON, "pedestrian", above)]
     )
     v = privacy_gate.check(_img(tmp_path))
     assert v.store_ok is False
@@ -99,8 +107,13 @@ def test_person_among_vehicles_still_withholds(tmp_path, monkeypatch):
     """One person in a crowd of cars settles it. The verdict is a union, never a
     majority vote."""
 
+    person_conf = config.GATE_CONF + 0.05
+
     def detect(img, conf):
-        return [_det(VEHICLE, "car", 0.9), _det(PERSON, "people", 0.33, (5, 5, 20, 40))]
+        return [
+            _det(VEHICLE, "car", 0.9),
+            _det(PERSON, "people", person_conf, (5, 5, 20, 40)),
+        ]
 
     monkeypatch.setattr(privacy_gate, "_detect", detect)
     assert privacy_gate.check(_img(tmp_path)).store_ok is False
@@ -261,7 +274,9 @@ def test_tiling_activates_and_boxes_land_in_bounds(tmp_path, monkeypatch):
         seen.append(img.size)
         # A box near the crop's own origin: if the caller forgot to add the crop
         # offset, every box would collapse onto the top-left corner.
-        return [_det(PERSON, "pedestrian", 0.4, (12.0, 14.0, 30.0, 60.0))]
+        return [
+            _det(PERSON, "pedestrian", config.GATE_CONF + 0.1, (12.0, 14.0, 30.0, 60.0))
+        ]
 
     monkeypatch.setattr(privacy_gate, "_detect", detect)
     v = privacy_gate.check(_img(tmp_path, size=(w, h)))

@@ -190,6 +190,10 @@ class ArchiveItem:
     class_max: int
     key_evidence: bool = False
     footprint_ids: list[str] = field(default_factory=list)
+    # The one footprint the caption describes, out of the tens a tile covers. The
+    # console places the dot here and names it, so "partial collapse" is attached to
+    # a structure rather than floating over the middle of the frame.
+    caption_anchor: Optional[str] = None
     # Cosine similarity to the query when the semantic resolver ranked this row,
     # None otherwise. Shown in the panel so an operator sees WHY a result placed
     # where it did rather than being asked to trust an ordering.
@@ -207,6 +211,7 @@ class ArchiveItem:
             "class_max": int(self.class_max),
             "key_evidence": bool(self.key_evidence),
             "footprint_ids": list(self.footprint_ids),
+            "caption_anchor": self.caption_anchor,
             "score": self.score,
         }
 
@@ -219,6 +224,8 @@ def status_payload(**kw: Any) -> dict:
         "tiles_withheld_from_storage": kw.get("tiles_withheld_from_storage", 0),
         "tiles_error": kw.get("tiles_error", 0),
         "tile_latency_ms_p50": kw.get("tile_latency_ms_p50", 0),
+        # Tiles behind that median, so the console can qualify a thin sample.
+        "tile_latency_n": kw.get("tile_latency_n", 0),
         "tally": kw.get("tally", {}),
         "model_versions": kw.get("model_versions", {}),
         "tokens_per_s": kw.get("tokens_per_s", {}),

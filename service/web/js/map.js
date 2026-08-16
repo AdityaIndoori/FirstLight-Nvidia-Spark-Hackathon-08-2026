@@ -176,7 +176,7 @@ const LAYER_GROUPS = [
       swatch: { kind: 'pin', color: COLORS[a] },
       layers: [
         'route-' + a + '-real', 'route-' + a + '-approx',
-        'route-' + a + '-offroad', 'step-' + a,
+        'route-' + a + '-offroad', 'step-pulse-' + a, 'step-' + a,
       ],
       presets: ['dispatch', 'all'],
     })),
@@ -186,7 +186,7 @@ const LAYER_GROUPS = [
     rows: [
       {
         id: 'blocked', name: 'blocked roads', count: 'blocked', on: true,
-        swatch: { kind: 'dash', color: COLORS.red }, layers: ['roads-blocked'],
+        swatch: { kind: 'dash', color: COLORS.red }, layers: ['roads-blocked', 'roads-blocked-label'],
         presets: ['triage', 'dispatch', 'all'],
       },
       {
@@ -209,7 +209,10 @@ const LAYER_GROUPS = [
         // road geometry, and the blocked-road layer only makes sense next to the
         // open roads it is a closure of.
         id: 'roads', name: 'open roads', count: 'roads', on: true,
-        swatch: { kind: 'solid', color: COLORS.road }, layers: ['roads-open'],
+        swatch: { kind: 'solid', color: COLORS.road },
+        // Names travel with the lines: a labelled road whose line is hidden reads as
+        // text floating over nothing.
+        layers: ['roads-open', 'roads-label'],
         presets: ['triage', 'dispatch', 'all'],
       },
     ],
@@ -224,7 +227,7 @@ const LAYER_GROUPS = [
       },
       {
         id: 'nav', name: 'route being navigated', count: 'nav', on: true, dynamic: true,
-        swatch: { kind: 'solid', color: COLORS.green }, layers: ['nav-line'],
+        swatch: { kind: 'solid', color: COLORS.green }, layers: ['nav-line', 'nav-target'],
         presets: ['triage', 'dispatch', 'all'],
       },
     ],
@@ -364,7 +367,12 @@ function crossIcon() {
 function buildStyle() {
   return {
     version: 8,
-    // No glyphs and no sprite entries: nothing here needs a server to render.
+    // Glyphs are served from web/fonts, NOT from a glyph server: MapLibre renders
+    // `symbol` text from signed-distance-field ranges, so without these the roads
+    // source can carry 2,089 street names and the map still shows none. The ranges
+    // are committed (see fonts/ATTRIBUTION.txt), so this stays true with the network
+    // unplugged, which is the whole premise of the box.
+    glyphs: 'fonts/{fontstack}/{range}.pbf',
     sources: {
       // maxzoom is the DEEPEST ZOOM ACTUALLY CACHED, not the deepest the map can
       // display. Claim more than the cache holds and MapLibre requests tiles that
@@ -449,6 +457,67 @@ function buildStyle() {
         paint: { 'line-color': COLORS.red, 'line-width': 5, 'line-dasharray': [2.4, 1.6] },
       },
 
+      // Street names along the roads. WHY symbol-placement 'line': an operator
+      // reading "turn right onto Florida Avenue" from the turn-by-turn needs to find
+      // Florida Avenue on the map, and a label that follows the centreline stays
+      // legible on a curve where a centred pin would not. MapLibre also collides
+      // these against each other and against the numbered stops, so a dense grid
+      // thins itself out instead of turning into a wall of text.
+      //
+      // Deliberately zoom-gated: at 12 the whole county is on screen and every name
+      // would be noise, and the names only matter once an operator is reading a
+      // route. Halo rather than a background box, because a box would hide the
+      // damage polygons the labels sit on top of.
+      {
+        id: 'roads-label', type: 'symbol', source: 'roads',
+        minzoom: 14,
+        filter: ['all', ['has', 'name'], ['!=', ['get', 'name'], '']],
+        layout: {
+          'symbol-placement': 'line',
+          'text-field': ['get', 'name'],
+          'text-font': ['Noto Sans Regular'],
+          'text-size': ['interpolate', ['linear'], ['zoom'], 14, 10, 17, 13],
+          'text-max-angle': 35,
+          'text-padding': 4,
+          // Repeat on long roads so a name is reachable without panning the length
+          // of it, but not so often that one street reads as many.
+          'symbol-spacing': 260,
+          'text-allow-overlap': false,
+          'text-ignore-placement': false,
+        },
+        paint: {
+          'text-color': '#c3d0dd',
+          // A dark halo, not a light one: this basemap is dark, and a light halo
+          // would glow into the damage polygons.
+          'text-halo-color': 'rgba(6,9,13,0.92)',
+          'text-halo-width': 1.6,
+          'text-halo-blur': 0.3,
+        },
+      },
+
+      // The name of a CLOSED road, in red, above the open-road labels. A closure is
+      // the one road fact a crew must not miss, and it is the label they will look
+      // for by name after the panel tells them a street is shut.
+      {
+        id: 'roads-blocked-label', type: 'symbol', source: 'roads',
+        minzoom: 13,
+        filter: ['all', ['==', ['get', 'blocked'], true], ['has', 'name']],
+        layout: {
+          'symbol-placement': 'line',
+          'text-field': ['get', 'name'],
+          'text-font': ['Noto Sans Regular'],
+          'text-size': ['interpolate', ['linear'], ['zoom'], 13, 11, 17, 14],
+          'text-max-angle': 35,
+          'symbol-spacing': 220,
+          'text-allow-overlap': false,
+        },
+        paint: {
+          'text-color': COLORS.red,
+          'text-halo-color': 'rgba(6,9,13,0.95)',
+          'text-halo-width': 1.8,
+        },
+      },
+
       // Real routed geometry is solid; the straight connector is dashed and
       // labelled approximate, so the map never implies a road-following line
       // it does not have.
@@ -485,8 +554,22 @@ function buildStyle() {
 
       {
         id: 'nav-line', type: 'line', source: 'nav',
+        filter: ['!=', ['geometry-type'], 'Point'],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: { 'line-color': COLORS.green, 'line-width': 6, 'line-opacity': 0.9 },
+      },
+      {
+        // The building at the end of the route: a hollow ring, so the numbered
+        // step icon underneath stays readable through it.
+        id: 'nav-target', type: 'circle', source: 'nav',
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 9, 18, 20],
+          'circle-color': 'rgba(0,0,0,0)',
+          'circle-stroke-color': COLORS.green,
+          'circle-stroke-width': 3,
+          'circle-stroke-opacity': 0.95,
+        },
       },
 
       // Line the operator is drawing for a road closure. Above nav so the
@@ -515,6 +598,27 @@ function buildStyle() {
           'circle-stroke-width': 2,
         },
       },
+
+      // The pulse under each agency's #1 stop. WHY a separate circle layer: the
+      // numbered pins are raster icons and cannot be animated in place, so the halo
+      // is drawn beneath them with its radius driven from a rAF loop. Only n===1
+      // qualifies - a pulse on every pin is wallpaper, and the point is to make the
+      // first stop findable on a map holding a dozen numbered stops.
+      //
+      // One layer PER AGENCY so it toggles with that agency's pins in the legend:
+      // a single shared layer would leave Fire's halo breathing over a hidden route.
+      ...AGENCIES.map((a) => ({
+        id: 'step-pulse-' + a, type: 'circle', source: 'steps',
+        filter: ['all', ['==', ['get', 'n'], 1], ['==', ['get', 'agency'], a]],
+        paint: {
+          'circle-color': COLORS[a],
+          'circle-opacity': 0.28,
+          'circle-radius': 13,
+          'circle-stroke-color': COLORS[a],
+          'circle-stroke-opacity': 0.9,
+          'circle-stroke-width': 2,
+        },
+      })),
 
       ...AGENCIES.map((a) => ({
         id: 'step-' + a, type: 'symbol', source: 'steps',
@@ -795,10 +899,36 @@ function wireInteractions() {
       const f = ev.features && ev.features[0];
       if (!f) return;
       const p = f.properties || {};
+      // MapLibre flattens feature properties to strings, so the evidence object
+      // travels as JSON and is parsed back here.
+      let evidence = null;
+      try {
+        evidence = p.evidence ? JSON.parse(p.evidence) : null;
+      } catch (err) { evidence = null; }
+
+      // The picture that put this stop on the plan. A popup asserting "damage
+      // extent unresolved" should show the frame that says so, because a crew
+      // about to be sent somewhere can argue with an image and cannot argue with
+      // a sentence. Withheld frames never reach here: this comes from the archive
+      // table and a withheld image has no row in it.
+      const shot = evidence
+        ? '<img class="ev-shot" src="' + esc(evidence.thumb_path) + '" alt="evidence frame" '
+          + 'title="click to open the full frame">'
+          + '<div class="sub ev-cap">' + esc(evidence.caption || 'no caption') + '</div>'
+        : '<div class="sub ev-none">no stored frame for this stop: the imagery that '
+          + 'graded it was withheld from storage</div>';
+
       popup(ev.lngLat, '<h4>' + esc(AGENCY_LABEL[a] || a) + ' ' + esc(p.n) + '</h4>'
         + '<div class="sub">' + esc(p.label || '') + '</div>'
         + '<div class="sub">' + esc(p.task || '') + '</div>'
-        + (p.units ? '<div class="sub">' + esc(p.units) + ' unit(s) assigned</div>' : ''));
+        + (p.units ? '<div class="sub">' + esc(p.units) + ' unit(s) assigned</div>' : '')
+        + shot);
+
+      if (evidence && onPinClick) {
+        // Same lightbox the archive uses, so one image viewer serves both panels.
+        const node = document.querySelector('.maplibregl-popup-content .ev-shot');
+        if (node) node.addEventListener('click', () => onPinClick(evidence));
+      }
       if (p.footprint_id && ctx) ctx.bus.emit('building:click', { footprint_id: p.footprint_id });
     });
   }
@@ -965,6 +1095,8 @@ function planFeatures(plan) {
           task: s.task || '',
           units: s.units || 0,
           footprint_id: s.footprint_id || '',
+          // Serialized because MapLibre feature properties are flat scalars.
+          evidence: s.evidence ? JSON.stringify(s.evidence) : '',
         },
       });
     }
@@ -1074,11 +1206,12 @@ async function loadAll() {
   }
 }
 
-function fitBox(box) {
+function fitBox(box, opts) {
   if (!map || !mapReady) return;
   const padded = pad(box, 0.08);
   try {
-    map.fitBounds([[padded[0], padded[1]], [padded[2], padded[3]]], { padding: 40, duration: 600, maxZoom: 17 });
+    map.fitBounds([[padded[0], padded[1]], [padded[2], padded[3]]],
+      { padding: 40, duration: 600, maxZoom: (opts && opts.maxZoom) || 17 });
   } catch (err) { /* a degenerate bbox is not worth a broken console */ }
 }
 
@@ -1186,10 +1319,21 @@ export function showRoute(geometry, opts) {
     paintLegend();
     return;
   }
-  const fc = {
-    type: 'FeatureCollection',
-    features: [{ type: 'Feature', geometry, properties: { label: (opts && opts.label) || '' } }],
-  };
+  // The line AND its destination. A route that draws without marking where it
+  // ends leaves an operator scanning a dozen numbered stops to work out which one
+  // they just asked about, which is the question the Nav button was answering.
+  const end = geometry.coordinates[geometry.coordinates.length - 1];
+  const features = [
+    { type: 'Feature', geometry, properties: { label: (opts && opts.label) || '', nav: 'line' } },
+  ];
+  if (Array.isArray(end) && end.length >= 2) {
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [Number(end[0]), Number(end[1])] },
+      properties: { label: (opts && opts.label) || '', nav: 'destination' },
+    });
+  }
+  const fc = { type: 'FeatureCollection', features };
   setData('nav', fc);
   counts.nav = 1;
   rowState.set('nav', true);
@@ -1197,11 +1341,15 @@ export function showRoute(geometry, opts) {
   const navRow = allRows().find((r) => r.id === 'nav');
   if (navRow && map && mapReady) {
     const color = (opts && opts.agency && agencyColor(opts.agency)) || COLORS.green;
-    try { map.setPaintProperty('nav-line', 'line-color', color); } catch (err) { /* style busy */ }
+    for (const [layer, prop] of [['nav-line', 'line-color'], ['nav-target', 'circle-stroke-color']]) {
+      try { map.setPaintProperty(layer, prop, color); } catch (err) { /* style busy */ }
+    }
     applyRowToMap(navRow);
   }
   const box = bboxOf([fc]);
-  if (box) fitBox(box);
+  // A tighter zoom cap than the default fit: the point of centring on one route is
+  // to see the building at the end of it.
+  if (box) fitBox(box, { maxZoom: 18 });
 }
 
 /** Raw MapLibre handle, or null. Sibling panels that need a control the module
@@ -1281,6 +1429,43 @@ export function captureLine(opts) {
     map.on('contextmenu', onCancel);
     document.addEventListener('keydown', onKey);
   });
+}
+
+// The #1-stop halo. A 1.6 s breath: radius grows from the pin's edge outward while
+// opacity falls, which is the shape the eye reads as "here" rather than as a
+// decoration. Driven from rAF and not a CSS animation because the circle lives in
+// the WebGL layer, and paused whenever the tab is hidden so a backgrounded console
+// is not spending GPU on an animation nobody is looking at.
+let pulseRAF = null;
+
+function startPulse() {
+  if (pulseRAF !== null) return;
+  const PERIOD = 1600;
+  const step = () => {
+    pulseRAF = null;
+    if (!map || !mapReady) return;
+    if (document.hidden) {
+      // Re-arm on a timer rather than rAF: rAF does not fire while hidden, so
+      // without this the pulse would never resume when the operator comes back.
+      setTimeout(() => { pulseRAF = null; startPulse(); }, 400);
+      return;
+    }
+    // 0 -> 1 -> 0, eased so the growth decelerates as it fades.
+    const phase = (Date.now() % PERIOD) / PERIOD;
+    const wave = Math.sin(phase * Math.PI);
+    try {
+      for (const a of AGENCIES) {
+        const id = 'step-pulse-' + a;
+        map.setPaintProperty(id, 'circle-radius', 13 + 13 * wave);
+        map.setPaintProperty(id, 'circle-opacity', 0.30 * (1 - wave));
+        map.setPaintProperty(id, 'circle-stroke-opacity', 0.85 * (1 - 0.75 * wave));
+      }
+    } catch (err) {
+      return; // style torn down or reloading: a halo is not worth retrying into
+    }
+    pulseRAF = requestAnimationFrame(step);
+  };
+  pulseRAF = requestAnimationFrame(step);
 }
 
 export async function init(context) {
@@ -1394,6 +1579,7 @@ export async function init(context) {
   window.__flMap = map;
   crossIcon();
   wireInteractions();
+  startPulse();
   applyAllRows();
   setBasemap('tactical');
   probeBasemaps();

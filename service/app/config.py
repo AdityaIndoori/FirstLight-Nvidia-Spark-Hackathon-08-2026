@@ -38,7 +38,20 @@ VL_TIMEOUT_S = float(os.environ.get("FIRSTLIGHT_VL_TIMEOUT", "20"))
 GATE_WEIGHTS = os.environ.get(
     "FIRSTLIGHT_GATE_WEIGHTS", str(Path.home() / "firstlight" / "visdrone-yolov8x.pt")
 )
-GATE_CONF = float(os.environ.get("FIRSTLIGHT_GATE_CONF", "0.25"))
+# SET FROM THE MEASUREMENT, which is what A5 exists for. Swept on 100 held-out
+# real aerial frames, 50 with people and 50 without, through the tiled path:
+#
+#   conf   recall   precision   false clears   false withholds
+#   0.25    98.0%      76.6%          1              15
+#   0.50    98.0%      86.0%          1               8
+#   0.60    96.0%      87.3%          2               7
+#   0.70    88.0%      95.7%          6               2
+#
+# 0.50 dominates 0.25: same recall, same single false clear, and precision rises
+# from 76.6 to 86.0 while false withholds halve. Going higher starts trading away
+# recall, and a false clear costs the privacy claim while a false withhold costs an
+# operator one review click, so recall is the side to protect.
+GATE_CONF = float(os.environ.get("FIRSTLIGHT_GATE_CONF", "0.5"))
 # VisDrone: 0 pedestrian, 1 people. COCO fallback: 0 person.
 GATE_PERSON_CLASSES = {
     int(c) for c in os.environ.get("FIRSTLIGHT_GATE_CLASSES", "0,1").split(",") if c.strip()

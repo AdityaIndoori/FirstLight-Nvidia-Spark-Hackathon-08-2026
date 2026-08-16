@@ -11,7 +11,7 @@ import logging
 import math
 import os
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from . import config, contracts, db
 
@@ -260,6 +260,42 @@ def _near_facility(item: dict, *, within_m: int = 300) -> bool:
         return False
 
 
+def evidence_for(footprint_ids: list[str]) -> Optional[dict]:
+    """The archived frame that put these buildings on the plan, or None.
+
+    WHY a dispatch step carries an image: the popup asserts something like "damage
+    extent unresolved", and a crew about to be sent somewhere is entitled to see
+    the frame that says so. Text is a claim, the pixels are the evidence, and an
+    Ops Chief who disagrees with the assignment needs to disagree with a picture
+    rather than with a sentence.
+
+    Withheld frames cannot appear here by construction: this reads the archive
+    table, and a withheld image has no row in it. So a person tile can put a
+    building on the plan, which is the point of the storage pivot, and still never
+    surface its pixels.
+    """
+    if not footprint_ids:
+        return None
+    rows = db.q(
+        "SELECT image_id, thumb_path, caption, class_max, captured_at, footprints_json "
+        "FROM archive ORDER BY class_max DESC, captured_at DESC"
+    )
+    wanted = set(footprint_ids)
+    for row in rows:
+        covered = set(db.jload(row["footprints_json"], []) or [])
+        if not covered & wanted:
+            continue
+        return {
+            "image_id": row["image_id"],
+            "thumb_path": row["thumb_path"] or "",
+            "caption": row["caption"] or "",
+            "class_max": int(row["class_max"] or 0),
+            "captured_at": float(row["captured_at"] or 0.0),
+            "matched": sorted(covered & wanted)[:8],
+        }
+    return None
+
+
 def _agency_route(agency: str, rows: list[dict]) -> Optional[dict]:
     """The routed line for one agency's ordered stops, or None to omit the key.
 
@@ -303,15 +339,39 @@ def stop_spacing_m() -> float:
         return 120.0
 
 
+def stop_max_structures() -> int:
+    """Most buildings one stop may absorb.
+
+    WHY a cap: absorption is transitive - each candidate is measured against the
+    stop's anchor, so a chain of buildings each within the spacing of the last
+    accretes without bound. Measured on the box, one Public Works stop had swallowed
+    18 structures and was labelled "one park-up" while spanning several blocks. A
+    crew can walk a handful of doors from one vehicle; past that it is a second stop
+    whether the plan says so or not.
+    """
+    raw = os.environ.get("FIRSTLIGHT_STOP_MAX_STRUCTURES")
+    if raw is None:
+        return 6
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 6
+
+
 def _existing_stop_near(
     rows: list[dict], centroid: list[float], spacing: float
 ) -> Optional[dict]:
     """The already-planned stop this building belongs to, or None for a new one."""
     if spacing <= 0:
         return None
+    cap = stop_max_structures()
     for row in rows:
         c = row.get("centroid") or []
         if len(c) < 2:
+            continue
+        # A stop that is already a full walking group takes no more: the next
+        # building becomes its own stop rather than extending this one further.
+        if int(row.get("structures") or 1) >= cap:
             continue
         # Equirectangular is plenty at block scale and needs no dependency.
         lat_scale = math.cos(math.radians((c[1] + centroid[1]) * 0.5))
@@ -322,14 +382,104 @@ def _existing_stop_near(
     return None
 
 
-def _short_label(label: str) -> str:
-    """Keep a re-labelled cluster readable instead of nesting 'N structures near
-    N structures near ...' on every absorb."""
-    text = str(label or "")
-    marker = " structures near "
-    if marker in text:
-        return text.split(marker, 1)[1]
-    return text
+def _apply_overrides(steps: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """Replay operator plan edits over a freshly drafted plan.
+
+    WHY this exists: build_plan recomputes the draft from the live ranking every
+    time the console polls, so an edit recorded only in the decision log was gone
+    about two seconds later. A reassign visibly snapped back to the drafted agency,
+    and reorder, delete and edit did nothing at all.
+
+    Replaying rather than freezing: the ranking keeps moving as tiles land, and an
+    operator who moved one job to EMS still wants the rest of the list to reflect new
+    imagery. Only the fields an operator actually touched are overridden.
+    """
+    try:
+        rows = db.q("SELECT * FROM plan_overrides")
+    except Exception:  # noqa: BLE001 - a missing table costs edits, not the plan
+        return steps
+    if not rows:
+        return steps
+
+    ov = {r["footprint_id"]: r for r in rows}
+    out: dict[str, list[dict]] = {a: [] for a in contracts.AGENCIES}
+    for agency, rowlist in steps.items():
+        for s in rowlist:
+            o = ov.get(s["footprint_id"])
+            if o is None:
+                out[agency].append(s)
+                continue
+            if int(o["deleted"] or 0):
+                continue  # operator removed this stop
+            target = o["agency"] if o["agency"] in contracts.AGENCIES else agency
+            if o["units"] is not None:
+                s["units"] = int(o["units"])
+            if o["task"]:
+                s["task"] = str(o["task"])
+            if o["order_key"] is not None:
+                s["_order"] = float(o["order_key"])
+            out[target].append(s)
+
+    # Operator ordering first, in the order they set; everything else keeps the
+    # drafted sequence beneath it. A stable sort, so untouched stops do not shuffle.
+    for agency in out:
+        ordered = [s for s in out[agency] if "_order" in s]
+        rest = [s for s in out[agency] if "_order" not in s]
+        ordered.sort(key=lambda s: s["_order"])
+        out[agency] = ordered + rest
+        for s in out[agency]:
+            s.pop("_order", None)
+    return out
+
+
+def set_plan_override(
+    footprint_id: str,
+    *,
+    operator: str,
+    agency: Optional[str] = None,
+    order_key: Optional[float] = None,
+    deleted: Optional[bool] = None,
+    units: Optional[int] = None,
+    task: Optional[str] = None,
+) -> None:
+    """Record one operator edit. Upserts, so a stop can be reassigned then reordered
+    without the second edit dropping the first."""
+    if not operator.strip():
+        raise ValueError("operator name is required for any edit")
+    if agency is not None and agency not in contracts.AGENCIES:
+        raise ValueError(f"unknown agency {agency!r}")
+    prior = db.q1("SELECT * FROM plan_overrides WHERE footprint_id=?", (footprint_id,))
+
+    def keep(name: str, given: Any) -> Any:
+        if given is not None:
+            return given
+        return prior[name] if prior else None
+
+    db.run(
+        "INSERT OR REPLACE INTO plan_overrides "
+        "(footprint_id, agency, order_key, deleted, units, task, operator, ts) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (
+            footprint_id,
+            keep("agency", agency),
+            keep("order_key", order_key),
+            1 if deleted else (int(prior["deleted"]) if prior and deleted is None else 0),
+            keep("units", units),
+            keep("task", task),
+            operator,
+            time.time(),
+        ),
+    )
+
+
+def clear_plan_overrides(operator: str) -> int:
+    """Drop every operator edit and fall back to the drafted plan. Returns how many
+    were cleared, so the console can confirm rather than assert."""
+    n = db.q1("SELECT COUNT(*) AS n FROM plan_overrides")
+    count = int(n["n"] if n else 0)
+    db.run("DELETE FROM plan_overrides")
+    db.log(f"operator:{operator}", "plan-overrides-cleared", {"cleared": count})
+    return count
 
 
 def build_plan(
@@ -374,15 +524,21 @@ def build_plan(
                 near.setdefault("footprint_ids", [near["footprint_id"]])
                 near["footprint_ids"].append(it["footprint_id"])
                 near["structures"] = len(near["footprint_ids"])
-                near["label"] = (
-                    f"{near['structures']} structures near {_short_label(near['label'])}"
-                )
+                # The anchor address is what a crew navigates to, so it leads. The
+                # count is a parenthetical, because "2 structures near unnamed
+                # structure near Mulberry Avenue" makes an operator read three
+                # clauses to learn one street name.
+                near["label"] = f"{near['anchor']} (+{near['structures'] - 1} nearby)"
                 break
             if len(rows) < cap:
                 rows.append(
                     {
                         "footprint_id": it["footprint_id"],
                         "label": it["label"],
+                        # The address the stop is navigated to, kept separate from
+                        # the display label so absorbing a neighbour cannot nest
+                        # "N structures near N structures near ..." into it.
+                        "anchor": it["label"],
                         "centroid": it["centroid"],
                         "task": task,
                         "units": units,
@@ -403,12 +559,20 @@ def build_plan(
             }
         )
 
+    steps = _apply_overrides(steps)
+
     avail = {r["agency"]: int(r["units_available"]) for r in db.q("SELECT * FROM availability")}
     agencies = []
     for agency in contracts.AGENCIES:
         rows = steps[agency]
         for n, s in enumerate(rows, start=1):
             s["n"] = n
+            # The frame that put this stop on the plan. Absent rather than null when
+            # there is none, so the popup shows a picture or says plainly that the
+            # only evidence was withheld from storage.
+            ev = evidence_for(s.get("footprint_ids") or [s["footprint_id"]])
+            if ev is not None:
+                s["evidence"] = ev
         entry = {
             "agency": agency,
             "units_required": sum(s["units"] for s in rows),
