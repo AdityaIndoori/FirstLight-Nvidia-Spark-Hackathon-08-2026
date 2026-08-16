@@ -1,4 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Service runtime state: the venv, the ingested tiles, the database, the caches
 service/.venv/
 service/data/
-service/**/__pycache__/
-*.pyc
+
+# OS
+.DS_Store

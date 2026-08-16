@@ -1,0 +1,96 @@
+{
+  "schema": "firstlight/nemoclaw-agent/1",
+  "name": "firstlight-planner",
+  "description": "The FIRST LIGHT planner, running as a NemoClaw agent inside an NVIDIA OpenShell sandbox. It ranks damaged structures, tasks the next drone flight and drafts federal paperwork. An agent that tasks drones and drafts federal forms is an agent worth containing, which is why its tool surface is this small.",
+  "runtime": {
+    "sandbox": "my-assistant",
+    "openshell_version": "0.0.85",
+    "nemoclaw_version": "0.0.90",
+    "driver": "docker",
+    "policy": "deploy/openshell-policy.json",
+    "workspace": "./data"
+  },
+  "model": {
+    "provider": "vllm-local",
+    "endpoint": "http://127.0.0.1:8000/v1",
+    "served_model_name": "nano",
+    "model": "nvidia/NVIDIA-Nemotron-Nano-9B-v2-FP8",
+    "reasoning": "on for flight tasking, /no_think for cheap structured calls",
+    "structured_output": "response_format json_schema for objects, guided_choice for enumerated picks. Top-level guided_json is silently ignored on this build, so it is never used."
+  },
+  "threat_model_comment": "The agent's context and every model output are treated as fully attacker-controlled: any tile caption, EXIF field or filename may be hostile. The tool list below is designed for that assumption rather than against a cooperative caller.",
+  "no_fetch_primitive_comment": "There is deliberately NO tool anywhere in this definition that accepts a URL, a host, a port, a path or any other destination. An injected instruction can only reach the network through a primitive that takes a destination, and the agent does not have one: refresh_dataset takes a NAME from a closed enum of five, and the URL is looked up inside the librarian's module-level allowlist. So a prompt-injected agent has no fetch primitive to abuse, and that is a property of the tool surface rather than a rule the agent is asked to follow. OpenShell then denies off-allowlist destinations out of process, so the two controls are independent: even if app/librarian.py were rewritten, the sandbox still refuses.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "write_flight_plan",
+        "description": "Write the next drone survey area and its serpentine path. Emits a GeoJSON FeatureCollection with a survey-area Polygon and a survey-path LineString. Writes inside ./data only.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "bounds": {
+              "type": "array",
+              "description": "Survey area as [west, south, east, north]. Bounded to the configured AOI by the caller, so a hostile value cannot task a flight over another county.",
+              "items": {"type": "number"},
+              "minItems": 4,
+              "maxItems": 4
+            },
+            "altitude_m_agl": {"type": "number", "minimum": 10, "maximum": 400, "description": "Leg altitude above ground level, capped at the 400 ft class-G ceiling."},
+            "line_spacing_m": {"type": "number", "minimum": 10, "maximum": 500, "description": "Transect spacing in metres."},
+            "reason": {"type": "string", "maxLength": 400, "description": "Why this sector, in one sentence, for the decision log."}
+          },
+          "required": ["bounds", "altitude_m_agl", "line_spacing_m", "reason"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "write_export",
+        "description": "Write one of the fixed federal documents into ./data. The document kind is an enum, not a filename, so the agent cannot choose a destination path and cannot write outside the export directory.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["fema_pda", "ics_213", "ics_209", "ics_213_rr", "decision_log", "aid_package"],
+              "description": "Which document to write. A closed enum on purpose: no path, no filename, no destination."
+            },
+            "operator": {"type": "string", "maxLength": 120, "description": "The named human who owns the document. Every export is stamped DRAFT and carries a signature line, because a machine does not file federal paperwork."}
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "refresh_dataset",
+        "description": "Refresh one approved local dataset by name. GET only, checksum verified, atomically swapped into the local store. Names are fixed; URLs cannot be supplied. This is the agent's entire network surface.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "enum": [
+                "noaa_storm_imagery",
+                "xview2_labels",
+                "ms_building_footprints",
+                "cms_facilities",
+                "cdc_svi"
+              ],
+              "description": "Which approved dataset to refresh. The enum is the five names in app/librarian.py ALLOWLIST and a test asserts the two lists are identical, so adding a source to the librarian without deciding to expose it to the agent fails loudly instead of silently widening the agent's reach."
+            }
+          },
+          "required": ["name"],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "denied_tools_comment": "Named here so a reader can see what was considered and refused, rather than guessing from an absence. fetch_context(url), http_get(url), read_file(path), write_file(path), shell(cmd) and set_policy(rule) are all absent by decision. Each one hands an injected instruction either a destination or an arbitrary path, which is exactly the primitive the threat model assumes the attacker is hunting for.",
+  "denied_tools": ["fetch_context", "http_get", "read_file", "write_file", "shell", "set_policy"]
+}

@@ -77,9 +77,28 @@ const AGENCY_LABEL = { fire: 'Fire', ems: 'EMS', police: 'Police', public_works:
 const CLASS_LABEL = { 0: 'no damage', 1: 'minor damage', 2: 'major damage', 3: 'destroyed' };
 const FACILITY_LABEL = { nursing_home: 'nursing home', dialysis: 'dialysis centre', hospital: 'hospital' };
 
-// Used only until real geometry arrives, so the first view is the demo area of
-// operations rather than the whole planet. Mirrors config.AOI [w, s, e, n].
-const AOI_FALLBACK = [-122.42, 47.52, -122.36, 47.58];
+// Last resort only. The live AOI arrives from GET /api/status (aoi, aoi_name):
+// a hardcoded copy here would open the map over the wrong ocean the moment the
+// configured area of operations changes, and would make the basemap-cache note
+// lie. setAoi() replaces this as soon as the first status poll lands.
+const AOI_FALLBACK = [-82.78, 27.75, -82.70, 27.82];
+let AOI = AOI_FALLBACK.slice();
+let AOI_NAME = 'unknown';
+
+/** Adopt the served area of operations. Idempotent, and safe before init. */
+export function setAoi(bounds, name) {
+  if (!Array.isArray(bounds) || bounds.length !== 4) return;
+  if (!bounds.every((n) => typeof n === 'number' && isFinite(n))) return;
+  const changed = bounds.some((n, i) => n !== AOI[i]);
+  AOI = bounds.slice();
+  if (name) AOI_NAME = name;
+  if (changed && map) {
+    try {
+      map.jumpTo({ center: [(AOI[0] + AOI[2]) / 2, (AOI[1] + AOI[3]) / 2] });
+    } catch (err) { /* map not ready, the next init picks it up */ }
+    probeAndNote();
+  }
+}
 
 const TILES_TACTICAL = 'tiles/{z}/{x}/{y}.png';
 const TILES_SATELLITE = 'tiles/sat/{z}/{x}/{y}.png';
@@ -729,8 +748,8 @@ function wireInteractions() {
 function probeTile(template) {
   return new Promise((resolve) => {
     const z = 12;
-    const lng = (AOI_FALLBACK[0] + AOI_FALLBACK[2]) / 2;
-    const lat = (AOI_FALLBACK[1] + AOI_FALLBACK[3]) / 2;
+    const lng = (AOI[0] + AOI[2]) / 2;
+    const lat = (AOI[1] + AOI[3]) / 2;
     const n = Math.pow(2, z);
     const x = Math.floor((lng + 180) / 360 * n);
     const latRad = lat * Math.PI / 180;
@@ -744,20 +763,31 @@ function probeTile(template) {
   });
 }
 
+/** Re-probe and refresh the legend note. Safe to call before the map exists. */
+function probeAndNote() {
+  probeBasemaps().catch(() => { /* a probe failure is not worth a console error */ });
+}
+
 async function probeBasemaps() {
   const [tactical, satellite] = await Promise.all([
     probeTile(TILES_TACTICAL), probeTile(TILES_SATELLITE),
   ]);
   satelliteUsable = satellite;
   const satBtn = q('btn-basemap-satellite');
-  if (satBtn && !satellite) {
-    satBtn.disabled = true;
-    satBtn.title = 'No satellite tiles are cached under web/tiles/sat, so this basemap is not available offline.';
+  if (satBtn) {
+    satBtn.disabled = !satellite;
+    satBtn.title = satellite
+      ? 'Cached satellite imagery for this area of operations'
+      : 'No satellite tiles are cached under web/tiles/sat, so this basemap is not available offline.';
   }
-  if (!tactical) {
-    legendNotes.tiles = 'basemap tiles not cached, geometry still draws on the dark background';
-    paintLegendFoot();
-  }
+  // Re-probed whenever the AOI changes, so the note must be able to clear:
+  // a stale "not cached" line against a complete cache is the same lie in
+  // the other direction.
+  legendNotes.tiles = tactical
+    ? ''
+    : 'basemap tiles not cached for ' + (AOI_NAME === 'unknown' ? 'this area' : AOI_NAME)
+      + ', geometry still draws on the dark background';
+  paintLegendFoot();
 }
 
 // ------------------------------------------------------------------ fetching
@@ -1144,6 +1174,19 @@ export async function init(context) {
 
   buildLegend();
 
+  // Adopt the served area of operations. Doing this on the status bus rather
+  // than a constant means switching AOI is a server-side change only, and the
+  // basemap-cache note is always probed against the area actually configured.
+  // The shell exposes the bus as ctx.bus.on; ctx.on is accepted too so a
+  // thinner host object still wires this up.
+  const onBus = (evt, fn) => {
+    if (ctx && ctx.bus && typeof ctx.bus.on === 'function') ctx.bus.on(evt, fn);
+    else if (ctx && typeof ctx.on === 'function') ctx.on(evt, fn);
+  };
+  onBus('status', (payload) => {
+    if (payload) setAoi(payload.aoi, payload.aoi_name);
+  });
+
   const chevron = q('legend-chevron');
   const legend = q('legend');
   if (chevron && legend) {
@@ -1168,9 +1211,9 @@ export async function init(context) {
     });
   }
 
-  ctx.bus.on('data:changed', () => loadAll());
-  ctx.bus.on('plan:changed', () => loadAll());
-  ctx.bus.on('locate', (detail) => { if (detail && detail.centroid) flyTo(detail.centroid); });
+  onBus('data:changed', () => loadAll());
+  onBus('plan:changed', () => loadAll());
+  onBus('locate', (detail) => { if (detail && detail.centroid) flyTo(detail.centroid); });
 
   if (!window.maplibregl || typeof window.maplibregl.Map !== 'function') {
     engineMissing = true;
@@ -1196,7 +1239,7 @@ export async function init(context) {
     map = new window.maplibregl.Map({
       container: host,
       style: buildStyle(),
-      center: [(AOI_FALLBACK[0] + AOI_FALLBACK[2]) / 2, (AOI_FALLBACK[1] + AOI_FALLBACK[3]) / 2],
+      center: [(AOI[0] + AOI[2]) / 2, (AOI[1] + AOI[3]) / 2],
       zoom: 13,
       attributionControl: false,
       // Fonts would need a glyph server, and there is none offline.

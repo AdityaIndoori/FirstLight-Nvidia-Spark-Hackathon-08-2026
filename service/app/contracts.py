@@ -224,6 +224,10 @@ def status_payload(**kw: Any) -> dict:
         "recovery": kw.get("recovery"),
         "doubt_distribution": kw.get("doubt_distribution", {}),
         "datasets": kw.get("datasets", []),
+        # The AOI is served, never hardcoded in the frontend: a stale copy there
+        # opens the map over the wrong ocean and makes the basemap-cache note lie.
+        "aoi": kw.get("aoi"),
+        "aoi_name": kw.get("aoi_name", "custom"),
         "openshell": kw.get(
             "openshell", {"policy": "not-wired", "denials": 0, "allows": 0, "audit": []}
         ),

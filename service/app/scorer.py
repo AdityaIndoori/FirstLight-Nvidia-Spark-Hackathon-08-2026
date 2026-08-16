@@ -7,10 +7,13 @@ wired), and the road-cutoff multiplier from operator-declared blockages.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Optional
 
 from . import config, contracts, db
+
+log = logging.getLogger("firstlight.scorer")
 
 
 def _staleness_h(last_seen_at: Optional[float]) -> float:
@@ -201,6 +204,33 @@ AGENCY_RULES = (
 )
 
 
+def _agency_route(agency: str, rows: list[dict]) -> Optional[dict]:
+    """The routed line for one agency's ordered stops, or None to omit the key.
+
+    None every time routing cannot produce a real road-following line, so the
+    console falls back to its dashed approximate connector and says so. Returning
+    a failed Route here instead would put `route.ok == false` on the wire and the
+    map would draw a solid line it has no geometry for.
+
+    Police never get one: see the contract note at the call site.
+    """
+    if agency == "police" or len(rows) < 2:
+        return None
+    try:
+        from . import routing
+    except Exception:  # noqa: BLE001 - B4 absent degrades to the dashed connector
+        return None
+    try:
+        out = routing.route_for_agency(rows)
+    except Exception as exc:  # noqa: BLE001 - a plan must never fail on its map line
+        log.warning("agency route for %s failed: %s", agency, exc)
+        return None
+    geom = out.get("geometry") or {}
+    if not out.get("ok") or len(geom.get("coordinates") or ()) < 2:
+        return None
+    return out
+
+
 def build_plan(limit: int = 12, drafted_by: str = "stub-rules-v1") -> dict:
     """Draft assignments grouped by agency.
 
@@ -251,10 +281,18 @@ def build_plan(limit: int = 12, drafted_by: str = "stub-rules-v1") -> dict:
             "units_available": avail.get(agency, 0),
             "steps": rows,
         }
-        # `route` is ABSENT, not null, until B4's Dijkstra lands. The console
-        # draws a solid routed line when it is present and a dashed approximate
-        # connector when it is not, so absence must stay absence: a null would
-        # read as "routed, empty" and the map would tell a lie.
+        # `route` is ABSENT, not null, when there is no routed geometry. The
+        # console draws a solid routed line when the key is present and a dashed
+        # approximate connector when it is not, so absence must stay absence: a
+        # null would read as "routed, empty" and the map would tell a lie.
+        #
+        # Police are exempt on purpose. Their steps are closure posts at both ends
+        # of one road, and the console deliberately draws no connector between
+        # them, because a line down a road that is closed is the opposite of what
+        # the posts mean.
+        route = _agency_route(agency, rows)
+        if route is not None:
+            entry["route"] = route
         agencies.append(entry)
     return {"agencies": agencies, "drafted_by": drafted_by}
 
