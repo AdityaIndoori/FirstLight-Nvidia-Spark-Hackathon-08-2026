@@ -219,7 +219,7 @@ body{background:var(--bg);color:var(--ink);overflow:hidden;font:16px/1.45 var(--
 .hud .t{color:var(--dim);text-transform:none;letter-spacing:.02em}
 .hud .hint kbd{font:inherit;border:1px solid var(--line);border-radius:4px;padding:3px 5px;color:var(--dim);background:#0d1219}
 .dots{display:flex;gap:6px;margin-left:auto}
-.dots i{width:8px;height:8px;border-radius:50%;background:#212a36;cursor:pointer;transition:.22s}
+.dots i{width:8px;height:8px;border-radius:50%;background:#212a36;transition:.22s}
 .dots i.on{background:var(--ac);transform:scale(1.45)}
 .dots i.seen{background:#3a4757}
 .prog{position:fixed;z-index:7;top:0;left:0;height:2px;background:var(--ac);box-shadow:0 0 12px var(--ac);transition:width .35s ease}
@@ -255,8 +255,10 @@ body.key-on .key{display:grid}
 /* ---------- overview (press O) ---------- */
 body.ov .deck{display:grid;grid-template-columns:repeat(4,1fr);gap:11px;padding:26px 26px 92px;height:100%;overflow:auto;align-content:start}
 body.ov .slide{position:relative;inset:auto;display:flex;border:1px solid var(--line);border-radius:11px;
-  background:#0a0e14;cursor:pointer;aspect-ratio:16/10;overflow:hidden;padding:13px;justify-content:center}
+  background:#0a0e14;aspect-ratio:16/10;overflow:hidden;padding:13px;justify-content:center}
 body.ov .slide *{animation:none!important;transition:none!important;opacity:1!important;transform:none!important;pointer-events:none}
+/* Citation links are the ONE thing a pointer may touch, and only on a live slide. */
+.slide.on a{pointer-events:auto;cursor:pointer}
 body.ov .slide.on{border-color:var(--green);box-shadow:0 0 0 2px #76b90055}
 body.ov .slide > .wrap{gap:6px}
 body.ov .assert{font-size:15px;line-height:1.1}body.ov .assert.big{font-size:19px}
@@ -530,13 +532,19 @@ body.ov .bar{height:14px}body.ov .ui .bd{min-height:64px}
     <li><b>The demo is the centre, pre-committed and judge-driven.</b> <i>Demo is a first-class scored criterion in NVIDIA's own Devpost rubric; a judge panel reported nearly half of pitches ran out of time before showing anything working.</i></li>
     <li><b>Contrast and size floors.</b> Body text ≥4.5:1 against background (WCAG 1.4.3); nothing below ~24 pt equivalent; the headline sits at the top where the back row can see it.</li>
   </ul>
-  <p style="margin:14px 0 0"><b style="color:#fff">Keys</b> — ←/→ or Space: move · ↑/↓: step within a slide · N: speaker notes · O: overview · F: fullscreen · 1–8: jump · ?: this panel · Esc: close</p>
+  <p style="margin:14px 0 0"><b style="color:#fff">Keys</b> — navigation is keyboard-only, so a stray
+    trackpad touch cannot move the deck and a click on a source link only opens the source.<br>
+    <b style="color:#fff">←/→</b> or <b style="color:#fff">Space</b> move · <b style="color:#fff">↑/↓</b> step within a slide ·
+    <b style="color:#fff">1–7</b> jump · <b style="color:#fff">N</b> speaker notes · <b style="color:#fff">O</b> overview
+    (arrows to browse, Enter to open) · <b style="color:#fff">R</b> replay · <b style="color:#fff">F</b> fullscreen ·
+    <b style="color:#fff">?</b> this panel · <b style="color:#fff">Esc</b> close. Presentation remotes emitting
+    PageUp/PageDown work as ←/→.</p>
 </div></div>
 
 <div class="hud">
   <span><b id="hN">01</b> / 7</span>
   <span class="t" id="hT">FIRST LIGHT</span>
-  <span class="hint"><kbd>←</kbd><kbd>→</kbd> move <kbd>↑</kbd><kbd>↓</kbd> steps <kbd>N</kbd> notes <kbd>O</kbd> grid <kbd>?</kbd> why</span>
+  <span class="hint">keyboard only <kbd>←</kbd><kbd>→</kbd> move <kbd>↑</kbd><kbd>↓</kbd> steps <kbd>N</kbd> notes <kbd>O</kbd> grid <kbd>?</kbd> why</span>
   <span class="dots" id="dots"></span>
 </div>
 
@@ -563,10 +571,11 @@ body.ov .bar{height:14px}body.ov .ui .bd{min-height:64px}
     return c.textContent.replace(/\s+/g, ' ').trim();
   });
 
+  // Dots are STATUS INDICATORS, not controls — navigation is keyboard-only, so they must not
+  // invite a click that does nothing. Jump with 1-7 instead.
   slides.forEach((_, n) => {
     const d = document.createElement('i');
-    d.title = 'Slide ' + (n + 1);
-    d.onclick = e => { e.stopPropagation(); go(n); };
+    d.title = 'Slide ' + (n + 1) + ' — press ' + (n + 1) + ' to jump';
     dots.appendChild(d);
   });
   const dotEls = [...dots.children];
@@ -689,36 +698,28 @@ body.ov .bar{height:14px}body.ov .ui .bd{min-height:64px}
     if (k === '?' || k === '/') { document.body.classList.toggle('key-on'); e.preventDefault(); return; }
     if (document.body.classList.contains('key-on')) return;
 
-    if (k === 'ArrowRight' || k === 'PageDown' || k === ' ') { fwd(); e.preventDefault(); }
-    else if (k === 'ArrowLeft' || k === 'PageUp') { back(); e.preventDefault(); }
-    else if (k === 'ArrowDown') { if (step < stepsOf(i).length) { step++; paint(); } e.preventDefault(); }
-    else if (k === 'ArrowUp') { if (step > 0) { step--; paint(); } e.preventDefault(); }
+    // In the overview grid the arrows move a selection and Enter opens it; everywhere else
+    // they drive the deck. Same keys, so nothing new to remember.
+    const ov = document.body.classList.contains('ov');
+    if (k === 'Enter' && ov) { document.body.classList.remove('ov'); go(i, { reset: true }); e.preventDefault(); }
+    else if (k === 'ArrowRight' || k === 'PageDown' || k === ' ') { ov ? go(Math.min(slides.length - 1, i + 1)) : fwd(); e.preventDefault(); }
+    else if (k === 'ArrowLeft' || k === 'PageUp') { ov ? go(Math.max(0, i - 1)) : back(); e.preventDefault(); }
+    else if (k === 'ArrowDown') { if (ov) go(Math.min(slides.length - 1, i + 4)); else if (step < stepsOf(i).length) { step++; paint(); } e.preventDefault(); }
+    else if (k === 'ArrowUp') { if (ov) go(Math.max(0, i - 4)); else if (step > 0) { step--; paint(); } e.preventDefault(); }
     else if (k === 'Home') go(0, { reset: true });
     else if (k === 'End') go(slides.length - 1, { atEnd: true });
     else if (kl === 'n') document.body.classList.toggle('sn-on');
     else if (kl === 'o') { document.body.classList.toggle('ov'); if (!document.body.classList.contains('ov')) go(i, { reset: true }); }
     else if (kl === 'r') go(i, { reset: true });
     else if (kl === 'f') document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
-    else if (/^[1-7]$/.test(k)) go(Number(k) - 1, { reset: true });
+    else if (/^[1-7]$/.test(k)) { go(Number(k) - 1, { reset: true }); if (ov) document.body.classList.remove('ov'); }
   });
 
-  addEventListener('click', e => {
-    if (document.body.classList.contains('ov')) {
-      const s = e.target.closest('.slide');
-      if (s) { document.body.classList.remove('ov'); go(slides.indexOf(s), { reset: true }); }
-      return;
-    }
-    if (document.body.classList.contains('key-on')) { document.body.classList.remove('key-on'); return; }
-    if (e.target.closest('.dots') || e.target.closest('.sn')) return;
-    (e.clientX > innerWidth * 0.3 ? fwd : back)();
-  });
-
-  let tx = 0;
-  addEventListener('touchstart', e => tx = e.touches[0].clientX, { passive: true });
-  addEventListener('touchend', e => {
-    const dx = e.changedTouches[0].clientX - tx;
-    if (Math.abs(dx) > 46) (dx < 0 ? fwd : back)();
-  }, { passive: true });
+  // NAVIGATION IS KEYBOARD-ONLY, BY DESIGN.
+  // No click-to-advance and no swipe: a stray trackpad brush, a palm on the touchpad, or a
+  // click on one of the citation links must never move the deck. Clicking a source link now
+  // does exactly one thing — opens the source. Overview picks its slide with Enter.
+  // Most presentation remotes emit PageUp/PageDown or arrow keys, so they keep working.
 
   let rt;
   addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => fit(i), 110); });
