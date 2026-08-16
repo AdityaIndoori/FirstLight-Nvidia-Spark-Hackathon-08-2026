@@ -76,6 +76,10 @@ OUTLINE_GRID = "grid"
 # box, and the plan's per-tile budget is 10 s. Twelve crops is what fits when the
 # ensemble runs warm and the rest of the tile is stubbed in milliseconds.
 DEFAULT_VL_CALLS_PER_TILE = 12
+# Footprints outlined per tile. Sized so most buildings on screen carry a real
+# model grade rather than a stub: a rank list where every row shows the same
+# class and the same confidence is not a rank list.
+DEFAULT_FOOTPRINTS_PER_TILE = 40
 
 # The wall-clock companion to the call cap. Twelve crops measured at 7.0 s each is
 # 84 s of VL time, so batching them all is already over budget on a busy box: this
@@ -371,16 +375,37 @@ def _rect_geom(w: float, s: float, e: float, n: float) -> dict:
 
 # ------------------------------------------------------------- outline tiers
 def _outlines_from_footprints(bounds: Sequence[float]) -> list[tuple[str, dict, dict]]:
-    """County footprints clipped to the tile, as (id, geom, props)."""
-    out: list[tuple[str, dict, dict]] = []
+    """County footprints clipped to the tile, as (id, geom, props).
+
+    CAPPED, and the cap is a correctness matter rather than a performance one.
+    A real footprint layer puts hundreds of buildings under one tile (31,485 in
+    the Pinellas AOI, about 600 per demo tile) while the VL budget grades twelve.
+    Uncapped, the other 588 all receive the same pixel-stat stub verdict, which
+    lands as an identical class and confidence on every row: identical priorities,
+    a rank list that cannot be ordered, and a doubt column pinned near 1.0 for
+    thousands of buildings. Better to outline the ones we can actually assess.
+
+    Nearest-to-centre first, because a tile's subject is what the drone was
+    pointed at, and the operator can always fly the edges again.
+    """
+    cap = footprint_cap()
+    rows: list[tuple[float, str, dict, dict]] = []
+    w, s, e, n = _span(bounds)
+    cx, cy = (w + e) / 2.0, (s + n) / 2.0
     for f in datasets.footprints_in(bounds):
         if not f.geom:
             continue
         props = dict(f.props)
         if f.address:
             props["address"] = f.address
-        out.append((f"fp_{f.fid}", f.geom, props))
-    return out
+        c = f.centroid or [cx, cy]
+        d2 = (c[0] - cx) ** 2 + (c[1] - cy) ** 2
+        rows.append((d2, f"fp_{f.fid}", f.geom, props))
+    rows.sort(key=lambda r: r[0])
+    if cap and len(rows) > cap:
+        log.info("tile has %d footprints, grading the %d nearest the centre", len(rows), cap)
+        rows = rows[:cap]
+    return [(fid, geom, props) for _, fid, geom, props in rows]
 
 
 def _outlines_grid(bounds: Sequence[float], *, cols: int = 4, rows: int = 3) -> list[
@@ -449,6 +474,17 @@ def _env_number(name: str, default: float, cast: Any) -> Any:
 def vl_budget() -> int:
     """VL calls allowed per tile. Env-tunable so a slow box can drop it live."""
     return _env_number("FIRSTLIGHT_VL_CALLS_PER_TILE", DEFAULT_VL_CALLS_PER_TILE, int)
+
+
+def footprint_cap() -> int:
+    """Footprints outlined per tile, 0 for no cap.
+
+    Env-tunable because the right number depends on the imagery: a wide-area
+    survey frame legitimately covers hundreds of buildings, and an operator who
+    wants all of them can raise this and accept that most will carry a stub grade
+    clearly labelled as such.
+    """
+    return _env_number("FIRSTLIGHT_FOOTPRINTS_PER_TILE", DEFAULT_FOOTPRINTS_PER_TILE, int)
 
 
 def tile_wall_budget() -> float:

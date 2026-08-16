@@ -621,19 +621,53 @@ async def archive_add(files: list[UploadFile]) -> dict:
     return {"items": out}
 
 
-@app.get("/thumbs/{image_id}.jpg")
-def thumb(image_id: str) -> Response:
-    """Serve a thumbnail only for a row that still exists. Eviction deletes the
-    file, so this is defense in depth against a stale listing."""
+@app.get("/thumbs/{filename}")
+def thumb(filename: str) -> Response:
+    """Serve a thumbnail only for a row that still exists.
+
+    Two reasons this is a route and not a static mount. Eviction deletes the file,
+    so serving the directory blind would keep answering for a row that is gone;
+    and a withheld image must never have a thumbnail reachable at all, so the
+    lookup goes through the archive table by construction.
+
+    The path takes the whole filename rather than `{image_id}.jpg`, because
+    Starlette binds one path parameter per segment: a literal suffix after the
+    parameter never matches, so the old pattern 404'd every request.
+    """
+    image_id = Path(filename).stem
     row = db.q1("SELECT thumb_path FROM archive WHERE image_id = ?", (image_id,))
     if row is None:
         raise HTTPException(404, "not in the archive")
-    p = Path(str(row["thumb_path"]))
-    if not p.is_absolute():
-        p = config.THUMB_DIR / p.name
+    # thumb_path is a URL ("/thumbs/<id>.jpg"), and on POSIX a URL path looks
+    # absolute to pathlib, so treating it as a filesystem path sends the lookup to
+    # the filesystem root and 404s every thumbnail. Take the basename only, and
+    # resolve it inside THUMB_DIR: that is also what keeps a caller-supplied name
+    # from escaping the directory.
+    p = config.THUMB_DIR / Path(str(row["thumb_path"])).name
     if not p.exists():
         raise HTTPException(404, "thumbnail gone")
     return FileResponse(str(p), media_type="image/jpeg")
+
+
+@app.get("/api/archive/image/{filename}")
+def archive_image(filename: str) -> Response:
+    """The full-resolution image behind an archive row, for a click-to-enlarge.
+
+    Same enforcement as the thumbnail and for the same reason: the row must exist,
+    so a withheld image has no reachable full-size copy either. The file is read
+    from the analyzed directory by the name the archive recorded, never from a
+    caller-supplied path, so there is nothing here to traverse with.
+    """
+    image_id = Path(filename).stem
+    row = db.q1("SELECT filename FROM archive WHERE image_id = ?", (image_id,))
+    if row is None:
+        raise HTTPException(404, "not in the archive")
+    name = Path(str(row["filename"])).name
+    for directory in (config.ANALYZED_DIR, config.WATCH_DIR):
+        candidate = directory / name
+        if candidate.exists():
+            return FileResponse(str(candidate), media_type="image/jpeg")
+    raise HTTPException(404, "the stored image is gone")
 
 
 # ---------------------------------------------------------- authorized review

@@ -195,6 +195,10 @@ _ADDRESS_KEYS = (
     "address_1",
 )
 _TYPE_KEYS = (
+    # scripts/fetch_aoi.py stamps this when it enumerates a county's facility
+    # layers, because the layer id is the only place the kind is recorded: a
+    # Pinellas fire-station row carries NAME "09" and no type column at all.
+    "firstlight_kind",
     "type",
     "TYPE",
     "facility_type",
@@ -206,6 +210,8 @@ _TYPE_KEYS = (
     "amenity",
     "healthcare",
     "subtype",
+    "FACILITYTYPE",
+    "CRITICALFACILITY",
 )
 _SVI_KEYS = (
     "svi",
