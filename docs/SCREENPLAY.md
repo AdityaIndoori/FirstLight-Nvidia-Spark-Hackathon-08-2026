@@ -1,12 +1,47 @@
 # FIRST LIGHT — demo screenplay
 
-**Target 3:30. Structure follows the recommended flow.**
+**Runs 4:34 as written. The recommended flow totals 3:30 — read the timing note
+before you record.**
 Every number spoken here was measured on the box and is reproduced in
 `demo/measured.json`. Anything a judge can check on screen is marked ✅.
 
 Two columns: what you **do**, what you **say**. Say the words in the right column
-close to verbatim — they are timed, and every claim in them is one the box can
-defend.
+close to verbatim — they are word-counted, and every claim in them is one the box
+can defend. The Q&A at the end is preparation, not script; it is not in the count.
+
+### Timing, counted not guessed
+
+| Section | Words | At 175 wpm | Recommended |
+|---|---|---|---|
+| 1 Team | 65 | 22 s | 20–30 s ✅ |
+| 2 Pitch | 118 | 40 s | 30–40 s ✅ |
+| 3 Demo | 231 | 79 s | 45–60 s |
+| 4 Build | 275 | 94 s | 60–90 s ✅ |
+| 5 So what | 107 | 37 s | 20–30 s |
+| **Total** | **801** | **4:34** | **3:30** |
+
+Sections 1, 2 and 4 land inside the guidance. 3 and 5 run long, and the total does
+not fit 3:30 — the demo has more measured substance than 3:30 of speech. Two honest
+ways to record it:
+
+**A. Ship 4:34.** The guidance calls 3:30 *ideal*, not a cap. Every extra second is
+a measured number or a named bug, which is the opposite of padding.
+
+**B. Cut to 3:44** using the four `[CUT-n]` markers in the script, in this order.
+Verified by word count: dropping all four (CUT-3 replaced by its one-line
+substitute) leaves **656 words → 3:44 at 175 wpm**. That is as tight as this gets
+without dropping a measured claim, and it is 14 s over the ideal rather than 63.
+1. `[CUT-1]` the open-ground beat. Strongest with a reviewer who knows the old
+   behaviour, weakest with a judge who does not.
+2. `[CUT-2]` the DISPATCH/Nav narration. Keep the clicks — the ringed destination
+   and the turn list read without words.
+3. `[CUT-3]` the per-model detail. Say the one-line substitute instead; the
+   breakdown is on the memory slide anyway.
+4. `[CUT-4]` closer paragraph 2. Ends on "…signed and unerasable. That's a box a
+   county can own. Thank you."
+
+Do **not** cut the withheld-tile beat or the 33→10.8 bottleneck. They are the two
+moments that separate this from a dashboard.
 
 ---
 
@@ -72,21 +107,18 @@ so you narrate over live inference rather than over an edit.
 
 | Do | Say |
 |---|---|
-| Type `R. Alvarez` in the operator field. | "First, my name. Nothing in this system can be changed without it, and every change is written to an append-only log." |
-| Click **Upload drone images**, select **all** files in the test-image folder, Open. | "Six real frames from the NOAA survey of Panama City after Hurricane Michael. I'm selecting the images *and* their location sidecars — these frames carry no GPS in EXIF." |
-| Let the cards mount. Point at the counters. | "Six tiles, in flight together. Each card counts up so you can see it working — that is real inference, not a progress bar." |
-| **Wait.** Say nothing for ~5 s. Let the first card land. | — |
-| First card settles. | "There's the first: **14 buildings outlined, 5 severe.**" |
-| Point at the amber card as it settles. | "And there's the one I want you to see. That tile is **withheld from storage** — the person detector fired, confidence 0.55. |
-| Tap the withheld card so its stages show. | No thumbnail, no archive row, not searchable. **But it was still analysed** — five buildings from that frame are in the rank list right now. |
-| | A person in frame is rescue signal. Withholding it from *grading* would throw away the exact information triage needs. So the gate guards **storage**, not analysis. Those are two different decisions and we made them separately." |
-| Point at two cards reading `no buildings in frame (open ground)`. | "Two of these say *no buildings in frame*. That's the footprint layer telling the truth about woodland — earlier this week that path invented twelve rectangles and gave them real street addresses. We'd rather return nothing than invent a door to kick." |
-| Footer. | "Footer: **10.8 seconds per tile, p50, n equals 6** — measured, with the sample size shown." |
-| Click **RANK**. | "Ranked worklist. One priority number per card — hover, and you get the arithmetic." |
-| Hover the `how` hint on the top card. | "Severity, staleness, vulnerable density, doubt. Multiply the four and you get the number on the left — and if they ever *don't* multiply out, the card says so in red. Bring a calculator." |
-| Click **DISPATCH**. | "Grouped by agency, with coordinates under every address, because half of these have no street name a crew can drive to." |
-| Click **Nav** on Fire #1. | "Nav draws the route, centres on it, rings the destination, and gives turn-by-turn that **avoids blocked roads** — and it tells you when the last 50 metres leave the road network, instead of pretending a driveway is a street." |
-| Zoom in two notches. Street names appear. | "Street names, rendered offline. Same names the turn-by-turn reads out." |
+| Type `R. Alvarez` in the operator field. | "First, my name. Nothing changes in this system without it, and every change is logged append-only." |
+| Click **Upload drone images**, select **all** files in the test-image folder, Open. | "Six real NOAA frames from Panama City after Hurricane Michael — images plus location sidecars, because these carry no GPS in EXIF." |
+| Let the cards mount. | "Six tiles in flight together. Each card counts up, so you're watching real inference." |
+| **Wait ~5 s. Say nothing.** | — |
+| First card settles. | "**14 buildings outlined, 5 severe.**" |
+| Point at the amber card. | "And there's the one to watch. **Withheld from storage** — the person detector fired at 0.55. No thumbnail, no archive row, not searchable. |
+| Tap it so the stages show. | **But it was still analysed.** Five buildings from that frame are in the rank right now. A person in frame is rescue signal — the gate guards **storage**, not analysis. **98% recall on 50 held-out tiles**, one false clear, and we'll name it." |
+| `[CUT-1]` Point at the two `open ground` cards. | "Two say *no buildings in frame*. That's woodland, and the footprint layer saying so. This path used to invent twelve rectangles and give them real street addresses." |
+| Footer. | "**10.8 seconds a tile, p50, n=6.** Measured, sample size shown." |
+| Click **RANK**, hover `how` on the top card. | "One priority per card. Hover: severity, staleness, vulnerable density, doubt — multiply the four and you get the number. If they ever don't, the card says so in red." |
+| `[CUT-2]` Click **DISPATCH**, then **Nav** on Fire #1. *(keep the clicks, drop the words)* | "Grouped by agency, coordinates under every address. Nav routes it, rings the destination, and gives turn-by-turn that avoids blocked roads — and says when the last 50 metres leave the road network." |
+| Zoom in two notches. | "Street names, rendered offline. Same names the turn-by-turn reads out." |
 
 **✅ Verified this exact run:** 6 tiles / 27 s wall / 1 withheld on real
 person-signal / 26 buildings / tally 7 none, 12 minor, 6 major, 1 destroyed.
@@ -110,26 +142,25 @@ come back.
 
 | Do | Say |
 |---|---|
-| Console still up. | "Architecture. Ingest is a watch folder and an HTTP door, both hitting one pipeline: **privacy gate → damage grading → vulnerability join → uncertainty ballot → archive**. FastAPI, SQLite, vanilla-JS console, MapLibre. No cloud SDK anywhere in it." |
-| | "Five models, and none of them does another's job. **Nemotron Nano 12B v2 VL** grades each building crop 0 to 3 with guided JSON. **Nemotron 3.5 Lightning 30B** never sees pixels — it votes eight times on the grader's own caption, and the spread becomes a *doubt* column. **Nano 9B** drafts the agency tasking. **BGE-small** embeds captions for search, pinned to **CPU** — with three vLLM pools resident the GPU allocator is full and it OOMs. And a VisDrone YOLO guards storage." |
-| Switch to the memory slide. | "The hardware shaped every one of those choices. 128 GB unified memory is why five models are co-resident instead of swapped: **80.1 GB of weights** — Lightning 43, the planner 21, the VL grader 15 — plus KV pools, **124 of 128 GB** on that gauge. That is the whole reason this is a car-park box and not a rack." |
-| | "Three real bottlenecks. First: per-tile latency was **33 seconds** against a 10-second budget. The grader was issuing twelve vision calls **strictly serially** while the GPU sat with spare batch width. We made them concurrent, then measured the knee — 17.5 seconds at two lanes, 12.6 at four, 11.5 at eight, flattening right where the captioner's own `max-num-seqs` is set. **33 down to 10.8.**" |
-| | "Second: the privacy gate was crashing under exactly the load you just watched. Ultralytics mutates the model during inference, so six concurrent uploads raced and two tiles came back as detector errors. Because the gate **fails closed**, working imagery was silently becoming unstorable — a bug that *looks* like the gate doing its job. One lock at the right boundary, and a test that fails if two threads are ever inside the detector at once." |
-| Back to console. | "Third, and this is the one I'd want a judge to poke at: the box was **contradicting its own slide deck** on every number. Deck said 4.2 seconds a tile; the box said 33. Said 240 watts; the box draws **65 median, 85 peak**. So we wrote the measurement harness first, made the deck read from its JSON output, and scoped the latency percentile to the grading settings that produced it — change the VL budget and it starts a fresh measurement instead of averaging the old build in forever." |
-| | "Tradeoffs we took deliberately: eight vision calls a tile, not forty — the rest get a **labelled** pixel-statistic stub, so you can always tell what looked and what guessed. Upload deliberately does **not** deduplicate, because the gate must re-run rather than trust a cached verdict. And the decision log is append-only enforced by SQL triggers — I know, because it refused my own reset script." |
+| Console still up. | "One pipeline: **privacy gate → damage grading → vulnerability join → uncertainty ballot → archive**. FastAPI, SQLite, vanilla JS, MapLibre. No cloud SDK anywhere in it." |
+| `[CUT-3]` *(if cutting, say only: "Five models — a VL grader, a 30B that cross-examines it, a planner, an embedder, a person detector.")* | "Five models, none doing another's job. **Nano 12B VL** grades each crop 0–3 with guided JSON. **Lightning 30B** never sees pixels — it votes eight times on the grader's own caption, and the spread becomes the doubt column. **Nano 9B** drafts tasking. **BGE-small** embeds captions, pinned to **CPU**, because with three vLLM pools resident the GPU allocator is full and it OOMs. And a VisDrone YOLO guards storage." |
+| Switch to the memory slide. | "The hardware chose that shape. **80.1 GB of weights** — Lightning 43, planner 21, VL grader 15 — plus KV pools: **124 of 128 GB**, co-resident, nothing swapping. That's why this is a car-park box and not a rack." |
+| | "Two bottlenecks worth naming. Per-tile was **33 seconds** against a 10-second budget: the grader issued its twelve vision calls **serially** while the GPU had spare batch width. Concurrent, then measured the knee — 17.5 s at two lanes, 12.6 at four, 11.5 at eight, flattening exactly where the server's own `max-num-seqs` sits. **33 down to 10.8.**" |
+| | "And the privacy gate was crashing under the load you just watched. Ultralytics mutates the model mid-inference, so six concurrent uploads raced — and because the gate **fails closed**, working imagery silently became unstorable. A bug that *looks* like the gate working." |
+| Back to console. | "Which is the real theme: the box was contradicting its own deck on every number. Deck said 4.2 seconds a tile, box said 33. Said 240 watts, box draws **65**. So we wrote the measurement harness first and made the deck read from it." |
 
 **✅ Checkable:** `service/tools/measure_budget.py` reproduces the lane sweep;
-317 tests pass; `probe_append_only.py` shows `DELETE` and `UPDATE` both abort.
+318 tests pass; `probe_append_only.py` shows `DELETE` and `UPDATE` both abort.
 
 ---
 
-## 5 · So what — 3:10–3:35
+## 5 · So what — 3:10–3:30
 
 | Do | Say |
 |---|---|
-| Console up, rank list visible. | "So what. Today, the morning after a storm, this is four people with a paper map and a radio, and the imagery sits on an SD card until connectivity comes back. |
-| | This box does it in ten seconds a frame with the network unplugged, and it shows its work: every grade labelled with who made it, every number measured on the machine, every operator edit signed and unerasable. |
-| | We didn't build a dashboard over an API. We put five models in 128 gigabytes, ran them against real post-hurricane imagery, and **published the numbers that made us look slow** until we fixed them. |
+| Console up, rank list visible. | "So what. Today this is four people, a paper map and a radio, and the imagery sits on an SD card until the towers come back. |
+| | This box does it in **eleven seconds a frame with the network unplugged** — and it shows its work: every grade labelled with who made it, every number measured on the machine, every operator edit signed and unerasable. |
+| `[CUT-4]` | We didn't wrap a dashboard round an API. We put five models in 128 gigabytes, ran them on real post-hurricane imagery, and **published the numbers that made us look slow** until we'd fixed them. |
 | Beat. | That's a box a county can own. Thank you." |
 
 ---
@@ -137,10 +168,13 @@ come back.
 ## Judge questions, with answers the box supports
 
 **"Is the person detection actually any good?"**
-Recall is measured on 100 held-out real aerial tiles through the tiled path, not a
-single downscaled pass — a person at survey altitude is about 5 px in a 640 px
-frame, which is why we run overlapping 1280 px crops and take the union. The
-number is published, and the threshold was set *from* that measurement.
+Measured, don't hand-wave: **98% recall on 50 held-out person tiles** through the
+tiled 1280 px / 20 %-overlap path at conf 0.50, with 50 clear tiles alongside —
+withhold precision 86%, gate latency 59 ms p50. Say the failure out loud: **one
+false clear**, and we know which tile it is. A person at survey altitude is about
+5 px in a downscaled 640 px frame, which is why we scan overlapping full-res crops
+and take the union rather than one downscaled pass. Reproduce with
+`scripts/gate_eval.py --tiles data/gate_eval/tiles --labels data/gate_eval/labels.json`.
 
 **"Why do three cards have the identical priority?"**
 Because they are genuinely identical inputs: same street, same damage class, same
@@ -158,10 +192,17 @@ send someone to look. Say so, then point at the Fire list, where
 concede it is a live design tension and that the two priorities want to be two
 columns.
 
-**"What is stubbed?"**
+**"What is stubbed?"** — *and volunteer this if nobody asks*
 Say it plainly: the agency tasking is a labelled deterministic rule set, not the
 planner model, and it says `stub-rules-v1` on screen. Pixel-statistic grades are
 labelled `stub-pixelstat-v1`. Nothing on screen claims a model that did not run.
+
+The tradeoffs behind that are deliberate and worth saying in the same breath:
+**eight** vision calls a tile, not forty — the rest take the labelled stub, so you
+can always tell what looked from what guessed. Upload deliberately does **not**
+deduplicate, because the gate must re-run rather than trust a cached verdict from a
+possibly different build. And the decision log is append-only enforced by SQL
+triggers — I know, because it refused my own reset script.
 
 **"Prove it's offline."**
 Unplug the ethernet and upload another tile. Nothing in the pipeline reaches the
@@ -181,5 +222,8 @@ withheld tile and watch the gate reach the same verdict independently.
 - If the browser has stale JS, hard-reload before recording — assets are
   `no-store` now, but a tab opened before the last deploy can still be holding old
   code.
-- Total spoken words ≈ 620. At a measured 175 wpm that is 3:32. Read slower than
-  feels natural.
+- **801 spoken words as written = 4:34 at 175 wpm; 656 = 3:44 with all four cuts.**
+  Counted, not estimated. Rehearse against a stopwatch once: if you land under
+  4:00 uncut you are rushing the two beats that matter.
+- Also fix the header numbers if you edit any spoken line — the counts above are
+  the only reason the cut list can be trusted.
