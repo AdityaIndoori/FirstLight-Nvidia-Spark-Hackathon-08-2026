@@ -58,10 +58,25 @@ def test_offline_structured_and_location_only_queries_are_perfect():
 
 
 def test_offline_deterministic_repeated_runs():
+    """Same fixtures and a deterministic embedder must give the same SCORES.
+
+    took_ms is excluded on purpose: it is a wall-clock measurement, so comparing it
+    asserts that two runs take an identical number of milliseconds, which stops
+    being true the moment anything else shares the machine. That made this test
+    pass alone and fail in the full suite, which is the worst kind of flake because
+    it accuses whatever landed most recently.
+    """
     m1 = evaluate_search_recall_precision_offline()
     m2 = evaluate_search_recall_precision_offline()
     assert m1["value"] == m2["value"]
-    assert m1["details"]["per_query"] == m2["details"]["per_query"]
+
+    def scored(metric):
+        return [
+            {k: v for k, v in q.items() if k != "took_ms"}
+            for q in metric["details"]["per_query"]
+        ]
+
+    assert scored(m1) == scored(m2)
 
 
 def test_live_defers_when_bge_unavailable():
