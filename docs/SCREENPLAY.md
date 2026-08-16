@@ -67,7 +67,7 @@ ssh spark 'for p in 8000 8001 8002; do curl -s -m 3 http://127.0.0.1:$p/v1/model
 
 ---
 
-## 1 · Team — 0:00–0:25
+## 1 · Team — 0:00–0:22
 
 | Do | Say |
 |---|---|
@@ -83,7 +83,7 @@ ssh spark 'for p in 8000 8001 8002; do curl -s -m 3 http://127.0.0.1:$p/v1/model
 
 ---
 
-## 2 · Elevator pitch — 0:25–1:05
+## 2 · Elevator pitch — 0:22–1:02
 
 | Do | Say |
 |---|---|
@@ -100,10 +100,15 @@ ssh spark 'for p in 8000 8001 8002; do curl -s -m 3 http://127.0.0.1:$p/v1/model
 
 ---
 
-## 3 · Live demo — 1:05–2:05
+## 3 · Live demo — 1:02–2:21
 
-**One continuous take. Do not cut.** The whole batch settles in **27 seconds** ✅,
-so you narrate over live inference rather than over an edit.
+**One continuous take. Do not cut.**
+
+The batch settles in **27 seconds** ✅ but this section is **79 seconds of speech**,
+so the tiles finish while you are still talking. That is fine and intended: the
+first six lines run over live inference, and everything from the footer down happens
+on a settled screen. Do not speed up to "keep pace" with the upload — the RANK,
+DISPATCH and street-name beats are better read slowly against a finished result.
 
 | Do | Say |
 |---|---|
@@ -111,17 +116,24 @@ so you narrate over live inference rather than over an edit.
 | Click **Upload drone images**, select **all** files in the test-image folder, Open. | "Six real NOAA frames from Panama City after Hurricane Michael — images plus location sidecars, because these carry no GPS in EXIF." |
 | Let the cards mount. | "Six tiles in flight together. Each card counts up, so you're watching real inference." |
 | **Wait ~5 s. Say nothing.** | — |
-| First card settles. | "**14 buildings outlined, 5 severe.**" |
+| First card settles. | "There's the first — **fourteen buildings outlined**, and it tells you how many are severe." |
 | Point at the amber card. | "And there's the one to watch. **Withheld from storage** — the person detector fired at 0.55. No thumbnail, no archive row, not searchable. |
 | Tap it so the stages show. | **But it was still analysed.** Five buildings from that frame are in the rank right now. A person in frame is rescue signal — the gate guards **storage**, not analysis. **98% recall on 50 held-out tiles**, one false clear, and we'll name it." |
-| `[CUT-1]` Point at the two `open ground` cards. | "Two say *no buildings in frame*. That's woodland, and the footprint layer saying so. This path used to invent twelve rectangles and give them real street addresses." |
-| Footer. | "**10.8 seconds a tile, p50, n=6.** Measured, sample size shown." |
+| `[CUT-1]` Point at the cards reading `open ground`. | "Some say *no buildings in frame*. That's woodland, and the footprint layer saying so. This path used to invent twelve rectangles and give them real street addresses." |
+| Footer. | "**Twelve seconds a tile, p50, n=6.** Measured, sample size shown." |
 | Click **RANK**, hover `how` on the top card. | "One priority per card. Hover: severity, staleness, vulnerable density, doubt — multiply the four and you get the number. If they ever don't, the card says so in red." |
 | `[CUT-2]` Click **DISPATCH**, then **Nav** on Fire #1. *(keep the clicks, drop the words)* | "Grouped by agency, coordinates under every address. Nav routes it, rings the destination, and gives turn-by-turn that avoids blocked roads — and says when the last 50 metres leave the road network." |
 | Zoom in two notches. | "Street names, rendered offline. Same names the turn-by-turn reads out." |
 
-**✅ Verified this exact run:** 6 tiles / 27 s wall / 1 withheld on real
-person-signal / 26 buildings / tally 7 none, 12 minor, 6 major, 1 destroyed.
+**✅ Stable across runs** — say these: 6 tiles, **27 s wall**, exactly **1 withheld
+on real person-signal at conf 0.55**, `drone_00` outlines **14 buildings**, the
+withheld tile contributes **5**, and 26 buildings reach the rank.
+
+**⚠ Drifts between runs** — do NOT put a figure on these: the severe count per tile
+and the class tally (the VL grader runs at temperature, so a building can move
+between minor and major), how many tiles read `open ground` (2 or 3), and per-tile
+p50 (10.8–12.6 s observed). Say "it tells you how many are severe" and read the
+footer aloud from the screen instead of from this page.
 
 > **If a tile is slow on stage:** say *"that's a real 2-second-per-crop
 > vision-language call, eight crops a tile"* and keep talking. Do not apologise
@@ -129,7 +141,7 @@ person-signal / 26 buildings / tally 7 none, 12 minor, 6 major, 1 destroyed.
 
 ---
 
-## 4 · How we built it — 2:05–3:10
+## 4 · How we built it — 2:21–3:56
 
 Stay on the console; switch to the memory slide only for the middle third, then
 come back.
@@ -154,7 +166,7 @@ come back.
 
 ---
 
-## 5 · So what — 3:10–3:30
+## 5 · So what — 3:56–4:34
 
 | Do | Say |
 |---|---|

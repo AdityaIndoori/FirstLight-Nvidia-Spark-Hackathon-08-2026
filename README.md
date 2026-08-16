@@ -2,7 +2,15 @@
 
 **Offline disaster triage on one NVIDIA DGX Spark. Aerial photos in, ranked rescue plan out - with the room's network left plugged in, because policy keeps this box offline, not luck.**
 
-Team plan for the NVIDIA DGX Spark Hackathon, August 2026. Three builders, one weekend, one box.
+Built for the NVIDIA DGX Spark Hackathon, August 2026. Three builders, one weekend,
+one box.
+
+**Status: running.** The pipeline, console, privacy gate, uncertainty ballot and
+exports are wired and measured on `gn100-2714`. Every number in this README came off
+that machine via the tools in `service/tools/`, and the sections below say plainly
+what is still a labelled stub. Sections 1-13 after the reference material are the
+original pre-event design document, kept for the reasoning; where they disagree with
+a measured number, the measured number wins.
 
 ---
 
@@ -24,24 +32,246 @@ Two things make it a winner rather than a dashboard:
 
 > **Rules check, first 30 minutes.** We prototyped this concept before the event to de-risk the design. Confirm the event's fresh-code rules at check-in, write all submission code during the event, and disclose the earlier spike wherever the rules ask. The design is proven; the build is the weekend's work. Nobody claims otherwise on stage.
 
-## Status - Friday night, all measured on the box (`gn100-2714`)
+## Quick start
 
-The box is provisioned and the model layer is proven. All submission code is written during the event; the numbers below are infrastructure, measured tonight.
+Three vLLM servers, then the service. Everything is loopback; nothing reaches the
+network.
 
-| What | State | Evidence |
+```bash
+# 0. Environment. No API keys - see .env.example for why there are none.
+cp .env.example service/.env
+cd service && set -a && . .env && set +a
+
+# 1. Python deps (once). Torch/vLLM come from the Spark's base image.
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# 2. Model servers. Three pools, co-resident, utilization split so they fit.
+vllm serve --model nvidia/NVIDIA-Nemotron-Nano-9B-v2-FP8 \
+  --served-model-name nano --port 8000 --gpu-memory-utilization 0.25 \
+  --max-model-len 8192 --trust-remote-code &
+vllm serve --model nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
+  --served-model-name lightning --port 8001 --gpu-memory-utilization 0.35 \
+  --max-num-seqs 16 --trust-remote-code &
+vllm serve --model <path-to>/NVIDIA-Nemotron-Nano-12B-v2-VL-FP8 \
+  --served-model-name captioner --port 8002 --gpu-memory-utilization 0.22 \
+  --max-num-seqs 4 --trust-remote-code &
+
+# 3. The service.
+PYTHONPATH=$PWD .venv/bin/python -m uvicorn app.main:app \
+  --host 0.0.0.0 --port 8081 --log-level warning
+```
+
+Or use the supplied script, which also waits for readiness rather than assuming it:
+
+```bash
+bash service/tools/restart.sh          # stop, start, poll /api/status until it answers
+```
+
+Then open **`http://<box>:8081/`**. The console starts empty; it fills in when you
+upload. Tests: `cd service && python -m pytest tests/ -q` (318 pass).
+
+---
+
+## Tech stack
+
+| Layer | Choice | Why this one |
 |---|---|---|
-| Nemotron Nano 9B v2 FP8 | **serving** vLLM :8000 | 24 tok/s single-stream, warm; triage + ICS-213 prompts answering |
-| Nemotron 3.5 Lightning NVFP4 | **serving** vLLM :8001 | 52/52 shards verified; k=8 guided ballot in 848 ms; batch tags in 403 ms |
-| Nemotron Nano 12B v2 VL FP8 | **serving** vLLM :8002 | constrained caption in 7.0 s; grades from pixels |
-| Triple co-residency | **proven** | Nano 0.25 + Lightning 0.35 + VL 0.22 utilization splits, ~98 GB observed, zero swap |
-| Lightning DSpark drafter | staged (1.3 GB) | NVIDIA's published spec-decode checkpoint for Lightning; before/after measured Saturday |
-| VisDrone YOLOv8x privacy gate | **tested** | dense-crowd aerial fixture: 22 person detections, WITHHELD in 89 ms; vehicles correctly do not trigger |
-| xView2 first-place weights | extracted (24 checkpoints, 5.3 GB) | loc = single-image (usable as-is); cls = pre+post 6-channel (verified in code) |
-| BGE-small embedder | **tested** (CPU) | "buildings on fire" ranks fire-damage captions top; milliseconds per query |
-| County GIS for the demo AOI | **verified reachable** | Seattle Building Outlines 2023: 27,250 footprints w/ parcel PIN; KC parcels: 22,359; queried live against both ArcGIS endpoints |
-| vLLM API facts for this build | documented | `guided_choice` works; top-level `guided_json` silently ignored - use `response_format: json_schema`; Lightning ignores `/no_think` (Nano syntax), structured decoding tames it |
+| Serving | **vLLM** x3 pools | Continuous batching is what makes concurrent tile grading pay; utilization splits let three models be co-resident instead of swapped |
+| Grader | **Nemotron Nano 12B v2 VL FP8** | Grades damage 0-3 from pixels with guided JSON. ~2.2 s per building crop, measured |
+| Cross-examiner | **Nemotron 3.5 Lightning 30B A3B NVFP4** | Never sees pixels. Votes k=8 on the grader's own caption; the spread becomes `doubt` |
+| Planner | **Nemotron Nano 9B v2 FP8** | Drafts flight tasking. 23.9 tok/s measured |
+| Embedder | **BGE-small-en-v1.5** | Caption search. **CPU-pinned**: with three vLLM pools resident the GPU allocator is full and it OOMs |
+| Privacy gate | **VisDrone-trained YOLOv8x** | People at aerial scale, where COCO-trained detectors go blind. Tiled 1280 px / 20% overlap |
+| API | **FastAPI + uvicorn** | One process, sync handlers, `asyncio.to_thread` for the blocking pipeline |
+| Store | **SQLite** (WAL) | One file, no daemon. Decision log is append-only enforced by SQL triggers |
+| Console | **Vanilla ES modules + MapLibre GL** | No build step, no framework, no CDN. Basemap tiles and SDF glyphs served from disk |
 
-Not built yet, by plan: NemoClaw + OpenShell containment (B5), the wired pipeline, the operator console. That is the weekend's work.
+## Architecture
+
+```
+  drone downlink                        ONE BOX, NETWORK UNPLUGGED
+  ┌──────────────┐
+  │ watch folder │──┐
+  │ HTTP upload  │──┤
+  └──────────────┘  │
+                    ▼
+        ┌───────────────────────┐   withheld
+        │ 1. PRIVACY GATE       │──────────────► vault (analyzed, never stored,
+        │    YOLOv8x, tiled     │                never thumbnailed, never indexed)
+        └───────────┬───────────┘
+                    │ pixels cleared OR withheld - EITHER WAY, analysis continues
+                    ▼
+        ┌───────────────────────┐
+        │ 2. OUTLINES + GRADE   │  footprints ─► crops ─► VL grade 0-3 + caption
+        │    8 VL calls, 8 lanes│  (the rest take a LABELLED pixel-stat stub)
+        └───────────┬───────────┘
+                    ▼
+        ┌───────────────────────┐
+        │ 3. VULNERABILITY JOIN │  parcels · addresses · care facilities · CDC SVI
+        └───────────┬───────────┘
+                    ▼
+        ┌───────────────────────┐
+        │ 4. UNCERTAINTY BALLOT │  Lightning votes k=8 on the caption
+        │    flat pool, budgeted│  vote spread ─► `doubt`
+        └───────────┬───────────┘
+                    ▼
+        ┌───────────────────────┐
+        │ 5. ARCHIVE WRITER     │  the ONLY storage door. Gate verdict enforced HERE,
+        │    caption + embedding│  so the add-image and metadata-edit paths re-run it
+        └───────────┬───────────┘
+                    ▼
+     priority = severity x staleness x vulnerable_density x doubt
+                    │
+     ┌──────────────┼──────────────┬──────────────┐
+     ▼              ▼              ▼              ▼
+  RANK          DISPATCH        ARCHIVE        FLIGHT
+  worklist      by agency       semantic       next survey box
+  + doubt       + routes        search         + serpentine path
+                    │
+                    ▼
+     append-only decision log ──► FEMA PDA · ICS-213 · aid package
+```
+
+Every arrow is one process on one box. The only network traffic is the browser
+talking to `:8081` and the service talking to `127.0.0.1`.
+
+---
+
+## Reproducing the demo
+
+**No API keys exist in this project.** `.env.example` is the complete environment;
+copy it and change `FIRSTLIGHT_DATA`. The full step-by-step, with what to expect at
+each stage, is **[docs/RUNBOOK.md](docs/RUNBOOK.md)**; the recorded-demo script is
+**[docs/SCREENPLAY.md](docs/SCREENPLAY.md)**.
+
+```bash
+# 1. Clean slate, so the console starts empty and fills in live
+cd service && FIRSTLIGHT_AOI=bay FIRSTLIGHT_DATA=$PWD/data PYTHONPATH=$PWD \
+  .venv/bin/python tools/reset_clean.py --apply
+bash tools/restart.sh
+
+# 2. Pick a spread of real NOAA frames as test input
+.venv/bin/python tools/pick_test_images.py --n 6 --out /tmp/firstlight_test_images
+
+# 3. Upload them: the console's "Upload drone images" button, or the watch folder
+cp /tmp/firstlight_test_images/* data/watch/
+```
+
+Env vars that matter are documented inline in `.env.example`. The ones you are most
+likely to change:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `FIRSTLIGHT_AOI` | `pinellas` | Area of operations. Use `bay` for the Panama City demo imagery |
+| `FIRSTLIGHT_DATA` | `service/data` | Imagery, datasets, thumbnails, SQLite |
+| `FIRSTLIGHT_VL_CALLS_PER_TILE` | `8` | Model grades per tile. Higher = better coverage, slower tile |
+| `FIRSTLIGHT_VL_CONCURRENCY` | `8` | VL calls in flight. The measured knee on this box |
+| `FIRSTLIGHT_GATE_CONF` | `0.50` | Privacy gate threshold. Lower trades review clicks for recall |
+| `FIRSTLIGHT_REVIEW_TOKEN` | *(empty)* | Non-empty enables the withheld-image review route |
+
+**Selecting the `.bounds.json` sidecars matters.** The NOAA frames carry no EXIF
+GPS, and the geo chain is GeoTIFF transform -> EXIF GPS -> sidecar. Without the
+sidecar a tile lands in `NEEDS GEO` and cannot be graded until an operator drags it
+onto the map.
+
+### Measured on this box
+
+Regenerate all of these with the tools in `service/tools/`; `measure_for_deck.py`
+writes the JSON the slide deck reads, so the deck cannot drift from the hardware.
+
+| Metric | Measured | Tool |
+|---|---|---|
+| Per-tile, end to end (p50, n=6) | **10.8-12.6 s** | `measure_for_deck.py` |
+| Six-tile batch, wall clock | **27 s** | browser, concurrent upload |
+| VL grading call, one crop | **2.2 s** | `measure_models.py` |
+| Lightning k=8 ballot | **0.7-1.5 s** p50, load-dependent | `/api/status` |
+| Nano 9B decode | **23.9 tok/s** | `measure_models.py` |
+| Person recall / withhold precision | **98% / 86%** at conf 0.50 | `scripts/gate_eval.py` |
+| Gate latency | **59 ms** p50, 166 ms p95 | `scripts/gate_eval.py` |
+| Memory resident | **124 / 128 GB**, 80.1 GB weights, zero swap | `measure_for_deck.py` |
+| GPU power | **65 W** median, 85 W peak under load; 11 W idle | `measure_for_deck.py` |
+| Concurrency sweep | 17.5 s @2 lanes, 12.6 @4, 11.5 @8 | `measure_budget.py` |
+
+---
+
+## Datasets and provenance
+
+All local, all redistributable, no owner identity anywhere. Attribution files ship
+beside the data.
+
+| Data | Source | Licence | In the AOI |
+|---|---|---|---|
+| Post-disaster aerial imagery | [NOAA NGS emergency response imagery](https://storms.ngs.noaa.gov/), Hurricane Michael flight `20181011a`, 2018-10-11 | **Public domain** | 40 georeferenced frames at z18, ~525 m across, ~0.35 m/px |
+| Building footprints | [Microsoft GlobalMLBuildingFootprints](https://github.com/microsoft/GlobalMLBuildingFootprints) | **ODbL** | 20,429 polygons. ML-derived geometry only: no addresses, no owner identity |
+| Roads | OpenStreetMap via county extract | **ODbL** | 6,211 ways, 2,089 named |
+| Care facilities | CMS Care Compare (national) | **Public domain** | 4 in the AOI - nursing homes, dialysis, hospitals |
+| Social vulnerability | CDC/ATSDR SVI (national, block group) | **Public domain** | Feeds `vulnerable_density`; defaults to 0.5 where coverage is absent, never 0 |
+| Parcels + address points | Bay County FL open GIS | Public records | Joined on parcel ID for street addresses |
+| Person-detection eval set | VisDrone-derived, 50 person + 50 clear aerial tiles, hand-labelled | Research use | `data/gate_eval/`, with `labels.json` and `PROVENANCE.json` |
+| Map glyphs | [Noto Sans](https://fonts.google.com/noto/specimen/Noto+Sans) SDF ranges | **SIL OFL 1.1** | Committed, so road labels render offline |
+| Basemap tiles | Pre-downloaded raster pyramid | per-source, see cache | The style declares the deepest zoom **actually cached**, so it overzooms rather than painting black |
+
+**Synthetic data: none in the demo path.** Every damage grade you see on screen came
+from a real post-hurricane photograph. The one synthetic artifact in the codebase is
+a deterministic placeholder grid used *only* when a box has no footprint layer at
+all, and it is labelled `grid` in the outline source. It used to run whenever the
+footprint layer returned nothing, which fabricated buildings over open ground - that
+is fixed, and a test pins it.
+
+**Owner identity is dropped in the loader**, per-schema, and
+`dropped_columns_seen()` reports the measured subset. Property value never enters
+the priority formula.
+
+---
+
+## Known limitations
+
+Stated plainly, because a judge will find these anyway.
+
+1. **Agency tasking is a labelled rule set, not the planner model.** It says
+   `stub-rules-v1` on screen. The Nano 9B planner is wired and measured but the
+   deterministic rules are what ships the demo.
+2. **`doubt` is a multiplier, so an uncertain class-2 can outrank a confident
+   class-3.** Deliberate for *recon* priority - uncertainty means send someone to
+   look - but it is a genuine design tension. Recon priority and response priority
+   want to be two columns, and today they are one.
+3. **Only 8 of ~40 buildings per tile get a model grade.** The rest carry a
+   `stub-pixelstat-v1` grade, labelled everywhere it appears. That is a latency
+   choice, not a capability claim.
+4. **xView2 change-detection weights are unused.** The first-place `cls` models take
+   paired pre/post imagery; the demo path feeds single post-event tiles. Feeding post
+   as fake pre would read "no change" as "no damage", so we do not.
+5. **One false clear in the gate eval**, out of 50 person tiles. 98% recall is not
+   100%, and the failing tile is named in the eval output.
+6. **Routing is a local road-graph snap, not a full router.** Off-road segments are
+   drawn dotted and stated in the turn list rather than pretended away.
+7. **Grades vary run to run.** The VL grader runs at temperature, so a building can
+   move between minor and major between uploads. Stable across runs: the withhold
+   verdict, the outline counts, wall-clock latency.
+8. **The privacy gate serialises inference.** One image at a time through the
+   detector, because ultralytics mutates the model mid-predict. It costs
+   milliseconds next to VL grading, but it is a real bottleneck under heavy batch.
+9. **NemoClaw + OpenShell containment is scaffolded, not the demo centrepiece.**
+   The policy and audit surfaces exist; the live deny beat is the weekend's stretch.
+
+## Next steps
+
+In the order I would actually do them:
+
+1. **Split recon and response priority into two columns.** It is the one design flaw
+   a judge with a calculator can turn into a story, and the fix is presentational
+   rather than structural.
+2. **Ship cached pre-event basemap chips per tile** and turn on the xView2 `cls`
+   grader where coverage exists, giving a second independent grader to disagree with
+   the VL path.
+3. **Raise gate recall past 98%** with a lower threshold plus a second pass on
+   low-confidence tiles, then re-measure rather than assume.
+4. **Wire the Nano 9B planner into agency tasking** so `stub-rules-v1` disappears
+   from the screen instead of being explained.
+5. **RTSP ingest** for a genuine live downlink, rather than the watch folder standing
+   in for one.
+6. **Persist tok/s and gate metrics to the decision log** so the trust strip can plot
+   a trend instead of a single sample.
 
 ---
 
