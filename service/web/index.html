@@ -457,10 +457,17 @@ bus.on('status', (payload) => {
   const chip = el('chip-policy');
   if (chip) {
     const denials = Number(shell.denials || 0);
-    chip.textContent = 'POLICY: ' + (shell.policy || 'unknown')
-      + (denials ? ' - ' + denials + ' denied' : '');
-    chip.classList.toggle('ok', !!shell.policy && shell.policy !== 'not-wired');
-    chip.classList.toggle('warn', !shell.policy || shell.policy === 'not-wired');
+    const wired = !!shell.policy && shell.policy !== 'not-wired';
+    // A short verdict, never the policy prose. The full text is a paragraph and
+    // it was pushing the primary actions, including Upload, off the bar. The
+    // detail belongs in the tooltip and in the audit panel, not the chip.
+    chip.textContent = wired
+      ? 'POLICY: egress allowlisted' + (denials ? ', ' + denials + ' denied' : '')
+      : 'POLICY: not wired';
+    chip.title = String(shell.policy || 'policy state unknown')
+      + (shell.note ? '\n\n' + shell.note : '');
+    chip.classList.toggle('ok', wired);
+    chip.classList.toggle('warn', !wired);
   }
   const key = JSON.stringify([payload.tiles_analyzed, payload.tiles_stored,
     payload.tiles_withheld_from_storage, payload.tally]);

@@ -203,6 +203,87 @@ function thumbURL(item) {
   return String(p).charAt(0) === "/" ? p : ctx.url(p);
 }
 
+/** The full-resolution image behind a row. Same enforcement as the thumbnail:
+ *  the archive row must exist, so a withheld image has no reachable copy. */
+function imageURL(item) {
+  if (!item || !item.image_id) return "";
+  return "/api/archive/image/" + encodeURIComponent(item.image_id) + ".jpg";
+}
+
+/** Open the actual photograph, because a caption is a claim and the pixels are
+ *  the evidence: an operator overriding an AI grade needs to see what it saw.
+ *  Closes on the backdrop, the button, or Escape. */
+export function openImage(item) {
+  if (!item || !item.image_id) return;
+  const prior = document.getElementById("fl-lightbox");
+  if (prior) prior.remove();
+
+  const back = document.createElement("div");
+  back.id = "fl-lightbox";
+  back.setAttribute("role", "dialog");
+  back.setAttribute("aria-label", "Archive image " + item.image_id);
+  back.style.cssText =
+    "position:fixed;inset:0;z-index:9000;background:rgba(4,6,10,.92);" +
+    "display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;";
+
+  const img = document.createElement("img");
+  img.src = imageURL(item);
+  img.alt = item.caption || item.image_id;
+  img.style.cssText =
+    "max-width:92vw;max-height:78vh;border:1px solid #1f2733;border-radius:6px;background:#0a0d12;";
+
+  const cap = document.createElement("div");
+  cap.style.cssText =
+    "max-width:92vw;color:#dde6ee;font-size:13px;text-align:center;line-height:1.5;";
+  const capText = document.createElement("div");
+  capText.textContent = item.caption || "no caption";
+  const meta = document.createElement("div");
+  meta.style.cssText = "color:#8899aa;font-size:11.5px;margin-top:4px;";
+  const where = item.centroid
+    ? Number(item.centroid[1]).toFixed(5) + ", " + Number(item.centroid[0]).toFixed(5)
+    : "no location";
+  meta.textContent =
+    item.image_id +
+    " · " +
+    clock(item.captured_at) +
+    " · " +
+    where +
+    " · worst grade " +
+    classLabel(item.class_max);
+  cap.append(capText, meta);
+
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "mini";
+  close.textContent = "close";
+  close.style.cssText = "position:absolute;top:16px;right:20px;";
+
+  img.addEventListener("error", () => {
+    img.remove();
+    const fail = document.createElement("div");
+    fail.style.cssText = "color:#ff5c5c;font-size:13px;";
+    fail.textContent =
+      "the stored image is not on disk any more, so only its caption and grade remain";
+    back.insertBefore(fail, cap);
+  });
+
+  const shut = () => {
+    document.removeEventListener("keydown", onKey);
+    back.remove();
+  };
+  function onKey(e) {
+    if (e.key === "Escape") shut();
+  }
+  back.addEventListener("click", (e) => {
+    if (e.target === back) shut();
+  });
+  close.addEventListener("click", shut);
+  document.addEventListener("keydown", onKey);
+
+  back.append(close, img, cap);
+  document.body.appendChild(back);
+}
+
 function shortErr(err) {
   const s = err && err.message ? err.message : String(err);
   return s.length > 120 ? s.slice(0, 117) + "..." : s;
@@ -525,7 +606,13 @@ function cell(item) {
   el.appendChild(foot);
 
   el.title = (item.tags || []).join(", ") || item.image_id;
-  el.addEventListener("click", () => {
+  el.addEventListener("click", (e) => {
+    // Clicking the picture opens the picture. Clicking anywhere else on the card
+    // selects it and shows the editable detail, which is the metadata workflow.
+    if (e.target && e.target.tagName === "IMG") {
+      openImage(item);
+      return;
+    }
     selected = selected === item.image_id ? null : item.image_id;
     render();
     const map = ctx.map;
@@ -689,6 +776,14 @@ function init(rawCtx) {
   host = ctx.el("panel-archive");
 
   ensureAddInput();
+
+  // The map owns the pins; this panel owns showing an image. Registering the
+  // handler keeps the map from needing to know how a lightbox is built, and means
+  // clicking a pin and clicking a thumbnail land in exactly the same place.
+  const map = ctx.map || (rawCtx && rawCtx.mapModule);
+  if (map && typeof map.setPinHandler === "function") {
+    map.setPinHandler((item) => openImage(item));
+  }
 
   ctx.on("archive:show", onShow);
   render();

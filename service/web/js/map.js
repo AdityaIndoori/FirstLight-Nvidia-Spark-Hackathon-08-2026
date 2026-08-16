@@ -103,6 +103,30 @@ export function setAoi(bounds, name) {
 const TILES_TACTICAL = 'tiles/{z}/{x}/{y}.png';
 const TILES_SATELLITE = 'tiles/sat/{z}/{x}/{y}.png';
 
+// Zooms probed to discover cache depth, shallowest first: the sweep stops at the
+// first miss, so a cache ending at z15 is found in five requests.
+const PROBE_ZOOMS = [12, 13, 14, 15, 16, 17, 18, 19];
+// The shallowest zoom any cache is fetched at. Below this the map would request
+// tiles nobody downloaded, so the view is clamped rather than left to 404.
+const MIN_CACHED_ZOOM = 12;
+// Used before the probe answers, and when nothing is cached at all (in which case
+// the value is irrelevant because no tile will load either way).
+const FALLBACK_MAX_ZOOM = 19;
+// Discovered from the cache, never assumed. See probeBasemaps.
+const cachedMaxZoom = { tactical: FALLBACK_MAX_ZOOM, satellite: FALLBACK_MAX_ZOOM };
+
+// image_id -> ArchiveItem for the pins currently on the map, so a click can open
+// the photograph itself. Set by showPins, read by the pin click handler.
+const pinItems = new Map();
+// Registered by whoever can display an image (the archive panel), so the map does
+// not need to know how a lightbox is built.
+let onPinClick = null;
+
+/** Let another panel own what a pin click does. */
+export function setPinHandler(fn) {
+  onPinClick = typeof fn === 'function' ? fn : null;
+}
+
 const EMPTY = { type: 'FeatureCollection', features: [] };
 
 /* The legend IS the filter. One table drives the rows, the toggles, the counts
@@ -175,9 +199,15 @@ const LAYER_GROUPS = [
         presets: ['dispatch', 'all'],
       },
       {
-        id: 'roads', name: 'open roads', count: 'roads', on: false,
+        // On by default and in every preset. A crew reads a rescue plan against
+        // the street grid, so hiding roads makes the damage float in a void and
+        // makes the routed lines unreadable. It was off to reduce clutter, which
+        // was the wrong trade: the basemap alone does not carry the county's own
+        // road geometry, and the blocked-road layer only makes sense next to the
+        // open roads it is a closure of.
+        id: 'roads', name: 'open roads', count: 'roads', on: true,
         swatch: { kind: 'solid', color: COLORS.road }, layers: ['roads-open'],
-        presets: ['all'],
+        presets: ['triage', 'dispatch', 'all'],
       },
     ],
   },
@@ -333,12 +363,19 @@ function buildStyle() {
     version: 8,
     // No glyphs and no sprite entries: nothing here needs a server to render.
     sources: {
+      // maxzoom is the DEEPEST ZOOM ACTUALLY CACHED, not the deepest the map can
+      // display. Claim more than the cache holds and MapLibre requests tiles that
+      // are not there, gets 404s, and paints black; declare the truth and it
+      // overzooms the deepest cached level instead, which is blurry but readable.
+      // Both values are discovered from the cache by probeBasemaps.
       'base-tactical': {
-        type: 'raster', tiles: [TILES_TACTICAL], tileSize: 256, minzoom: 0, maxzoom: 19,
+        type: 'raster', tiles: [TILES_TACTICAL], tileSize: 256, minzoom: MIN_CACHED_ZOOM,
+        maxzoom: cachedMaxZoom.tactical,
         attribution: 'local tile cache',
       },
       'base-sat': {
-        type: 'raster', tiles: [TILES_SATELLITE], tileSize: 256, minzoom: 0, maxzoom: 19,
+        type: 'raster', tiles: [TILES_SATELLITE], tileSize: 256, minzoom: MIN_CACHED_ZOOM,
+        maxzoom: cachedMaxZoom.satellite,
         attribution: 'local tile cache',
       },
       buildings: { type: 'geojson', data: EMPTY },
@@ -603,25 +640,23 @@ function paintLegendFoot() {
   const foot = q('legend-foot');
   if (!foot) return;
   foot.textContent = '';
-  // The footnotes describe how layers are drawn. With no engine there is
-  // nothing drawn, so saying it would only confuse.
+  // Deliberately quiet. These notes used to explain the basemap cache depth, the
+  // dashed-connector caveat and the flight parameters, which is four lines of
+  // prose stacked under a control panel and read as clutter rather than as
+  // information. Every one of those facts is still available where it belongs:
+  // the flight parameters in the Flight tab, the routing caveat in the route
+  // popup and the Route contract's own warning, the tile depth in the Satellite
+  // button's tooltip. The legend is a filter, so it lists layers.
   if (engineMissing) return;
-  const lines = [];
-  if (legendNotes.tiles) lines.push({ text: legendNotes.tiles, warn: true });
-  if (legendNotes.plan) lines.push({ text: legendNotes.plan, warn: true });
-  if (legendNotes.flight) lines.push({ text: legendNotes.flight, warn: false });
   const off = allRows().filter((r) => {
     const node = q('legend-body') && q('legend-body').querySelector('.lrow[data-row="' + r.id + '"]');
     if (node && node.hidden) return false;
     return !rowState.get(r.id);
   });
-  if (off.length) lines.push({ text: off.length + ' layer(s) hidden: ' + off.map((r) => r.name).join(', '), warn: false });
-  for (const line of lines) {
-    const div = document.createElement('div');
-    if (line.warn) div.className = 'approx';
-    div.textContent = line.text;
-    foot.appendChild(div);
-  }
+  if (!off.length) return;
+  const div = document.createElement('div');
+  div.textContent = off.length + ' layer(s) hidden: ' + off.map((r) => r.name).join(', ');
+  foot.appendChild(div);
 }
 
 function applyRowToMap(row) {
@@ -722,8 +757,17 @@ function wireInteractions() {
       const f = ev.features && ev.features[0];
       if (!f) return;
       const p = f.properties || {};
+      // The pixels are the point: a caption is a claim and the photograph is the
+      // evidence, so a pin opens the image when a panel can show one. The popup
+      // is the fallback, not the destination.
+      const item = pinItems.get(String(p.image_id || ''));
+      if (item && onPinClick) {
+        onPinClick(item);
+        return;
+      }
       popup(ev.lngLat, '<h4>' + esc(p.image_id || 'image') + '</h4>'
-        + '<div class="sub">' + esc(p.caption || 'no caption') + '</div>');
+        + '<div class="sub">' + esc(p.caption || 'no caption') + '</div>'
+        + '<div class="sub">open the Archive tab to view this image</div>');
     });
   }
 
@@ -744,10 +788,10 @@ function wireInteractions() {
 }
 
 // -------------------------------------------------------------- tile probing
-/** Probe one cached tile so an empty tile directory is reported, not guessed. */
-function probeTile(template) {
+/** Probe the AOI-centre tile at one zoom. Reports what the cache HAS rather
+ *  than what the map would like it to have. */
+function probeTile(template, z = 12) {
   return new Promise((resolve) => {
-    const z = 12;
     const lng = (AOI[0] + AOI[2]) / 2;
     const lat = (AOI[1] + AOI[3]) / 2;
     const n = Math.pow(2, z);
@@ -763,28 +807,60 @@ function probeTile(template) {
   });
 }
 
+/** Deepest cached zoom for one basemap, or 0 when nothing is cached.
+ *
+ *  WHY this is measured and not configured: a satellite cache stopping at z15
+ *  while tactical reaches z18 is normal (imagery is far heavier per tile), and
+ *  the map must overzoom the last real level instead of requesting tiles that
+ *  do not exist and painting black.
+ */
+async function probeDepth(template) {
+  let deepest = 0;
+  for (const z of PROBE_ZOOMS) {
+    if (await probeTile(template, z)) deepest = z;
+    else break;
+  }
+  return deepest;
+}
+
 /** Re-probe and refresh the legend note. Safe to call before the map exists. */
 function probeAndNote() {
   probeBasemaps().catch(() => { /* a probe failure is not worth a console error */ });
 }
 
 async function probeBasemaps() {
-  const [tactical, satellite] = await Promise.all([
-    probeTile(TILES_TACTICAL), probeTile(TILES_SATELLITE),
+  const [tacticalDepth, satDepth] = await Promise.all([
+    probeDepth(TILES_TACTICAL), probeDepth(TILES_SATELLITE),
   ]);
-  satelliteUsable = satellite;
+  const changed =
+    tacticalDepth !== cachedMaxZoom.tactical || satDepth !== cachedMaxZoom.satellite;
+  cachedMaxZoom.tactical = tacticalDepth || FALLBACK_MAX_ZOOM;
+  cachedMaxZoom.satellite = satDepth || FALLBACK_MAX_ZOOM;
+  satelliteUsable = satDepth > 0;
+
+  // The style carries maxzoom, so a new depth means the sources need rebuilding.
+  if (changed && map && map.isStyleLoaded && map.isStyleLoaded()) {
+    for (const [id, depth] of [['base-tactical', cachedMaxZoom.tactical],
+                               ['base-sat', cachedMaxZoom.satellite]]) {
+      const src = map.getSource(id);
+      if (src) src.maxzoom = depth;
+    }
+  }
+
   const satBtn = q('btn-basemap-satellite');
   if (satBtn) {
-    satBtn.disabled = !satellite;
-    satBtn.title = satellite
-      ? 'Cached satellite imagery for this area of operations'
+    satBtn.disabled = !satelliteUsable;
+    satBtn.title = satelliteUsable
+      ? `Cached satellite imagery, sharp to zoom ${satDepth}, blurry beyond it`
       : 'No satellite tiles are cached under web/tiles/sat, so this basemap is not available offline.';
   }
   // Re-probed whenever the AOI changes, so the note must be able to clear:
   // a stale "not cached" line against a complete cache is the same lie in
   // the other direction.
-  legendNotes.tiles = tactical
-    ? ''
+  legendNotes.tiles = tacticalDepth
+    ? (satelliteUsable && satDepth < tacticalDepth
+        ? `satellite imagery is cached to zoom ${satDepth} only, so it blurs when you zoom past it`
+        : '')
     : 'basemap tiles not cached for ' + (AOI_NAME === 'unknown' ? 'this area' : AOI_NAME)
       + ', geometry still draws on the dark background';
   paintLegendFoot();
@@ -1028,6 +1104,12 @@ export function applyPreset(name) {
 
 export function showPins(items) {
   const list = Array.isArray(items) ? items : [];
+  // Retained so a pin click can hand the whole ArchiveItem back rather than only
+  // the id: the lightbox wants the caption, the timestamp and the grade too.
+  pinItems.clear();
+  for (const item of list) {
+    if (item && item.image_id) pinItems.set(String(item.image_id), item);
+  }
   const features = [];
   for (const item of list) {
     const c = item && item.centroid;
@@ -1241,6 +1323,10 @@ export async function init(context) {
       style: buildStyle(),
       center: [(AOI[0] + AOI[2]) / 2, (AOI[1] + AOI[3]) / 2],
       zoom: 13,
+      // Clamped to the cache: zooming out past z12 or in past the deepest cached
+      // level would request tiles nobody downloaded and paint black gaps.
+      minZoom: MIN_CACHED_ZOOM,
+      maxZoom: 19,
       attributionControl: false,
       // Fonts would need a glyph server, and there is none offline.
       localIdeographFontFamily: false,

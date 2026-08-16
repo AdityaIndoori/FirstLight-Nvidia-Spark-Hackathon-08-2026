@@ -93,6 +93,13 @@ code {
   font-size: 11px;
   color: var(--dim);
   white-space: nowrap;
+  /* Hard cap: a chip is a status glance, and the primary actions in this bar
+     (Upload, Download aid package) must never be pushed off screen by one. Long
+     text truncates and the tooltip carries the rest. */
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 0 auto;
 }
 
 .chip.ok { border-color: var(--green); color: var(--green); }
