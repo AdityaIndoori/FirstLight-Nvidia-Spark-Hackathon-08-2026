@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -456,6 +457,106 @@ def test_an_exhausted_budget_degrades_to_labelled_stubs(store, monkeypatch):
     assert all(r.how == vlm.GRADE_HOW_STUB for r in results)
     assert all(r.votes == [] for r in results)
     assert all(r.doubt == pytest.approx(0.4) for r in results)
+
+
+def test_the_budget_bounds_the_sweep_not_each_call(store, monkeypatch):
+    """The queued tail must go stub the moment the deadline passes.
+
+    A measured bug: the timeout used to be computed where the task was QUEUED, so
+    with 16 workers and 96 samples each call got a fresh full timeout and the sweep
+    overran. On the box a 12-building tile spent 5623 ms against a 4 s budget. The
+    deadline is now read at execution, so a sweep whose budget expires mid-flight
+    stops opening sockets instead of finishing at its own pace.
+    """
+    calls: list[float] = []
+    lock = threading.Lock()
+    budget_s = 0.35
+
+    def slow(endpoint, messages, **kw):
+        with lock:
+            calls.append(time.monotonic())
+        time.sleep(0.05)
+        return "3", vlm.GRADE_HOW_MODEL
+
+    monkeypatch.setattr(vlm, "chat", slow)
+    buildings = [FakeBuilding(f"b{i}", conf=0.6, caption=f"cap {i}") for i in range(40)]
+
+    t0 = time.monotonic()
+    results = ballot.vote_batch(buildings, k=8, max_concurrency=4, budget_s=budget_s)
+    elapsed = time.monotonic() - t0
+
+    assert len(results) == 40, "every building still gets a row"
+    assert elapsed < budget_s + 2.0, f"the sweep ran {elapsed:.2f}s against a {budget_s}s budget"
+    assert len(calls) < 40 * 8, "the tail must not have opened a socket at all"
+    assert any(r.how == vlm.GRADE_HOW_STUB for r in results), "the tail degraded"
+    assert ballot.last_sweep()["budget_hit"] is True
+    for r in results:
+        if r.how == vlm.GRADE_HOW_STUB:
+            assert r.votes == [] and r.doubt == pytest.approx(0.4)
+
+
+def test_a_sample_with_too_little_budget_left_never_opens_a_socket(store, monkeypatch):
+    """A cutoff we imposed must not be charged to Lightning.
+
+    Measured on the box: a tile whose budget expired mid-sweep tripped vlm's
+    circuit breaker, and the NEXT tile then got instant stubs for the whole 30 s
+    cooldown from a Lightning that was answering fine. The first guard is that a
+    sample without MIN_SAMPLE_S left does not call at all, so there is no cut-off
+    request for the breaker to count.
+    """
+    calls: list[int] = []
+    monkeypatch.setattr(
+        vlm, "chat", lambda e, m, **kw: (calls.append(1), ("3", vlm.GRADE_HOW_MODEL))[1]
+    )
+
+    # Just under the per-sample floor: enough clock left to look non-zero, not
+    # enough to be worth a round trip.
+    results = ballot.vote_batch(
+        [FakeBuilding("b1", conf=0.6, caption="c")],
+        k=8,
+        budget_s=ballot.MIN_SAMPLE_S * 0.5,
+    )
+
+    assert calls == [], "no socket opened when the remaining budget is below the floor"
+    assert results[0].how == vlm.GRADE_HOW_STUB
+    assert results[0].doubt == pytest.approx(0.4)
+    assert not vlm._breaker_open("lightning"), "our own cutoff must not open the breaker"
+
+
+def test_a_partly_served_sweep_clears_the_breaker(store, monkeypatch):
+    """The second guard, asserted on the mechanism rather than on a stopwatch.
+
+    A sweep that hit its budget while the endpoint was demonstrably answering
+    clears any breaker state the cutoff contributed, so the next tile is not served
+    instant stubs by a healthy Lightning.
+    """
+    install(monkeypatch, Recorder(["3"] * 8))  # exactly one building's worth
+
+    # 8 replies for 2 buildings: the first votes, the second falls through to stub.
+    results = ballot.vote_batch(
+        [FakeBuilding("first", conf=0.6, caption="a"), FakeBuilding("second", conf=0.6, caption="b")],
+        k=8,
+        budget_s=30.0,
+    )
+
+    by_id = {r.footprint_id: r for r in results}
+    assert by_id["first"].how == vlm.GRADE_HOW_MODEL
+    assert by_id["second"].how == vlm.GRADE_HOW_STUB
+
+    # Now the same mixed outcome under a budget, which is the state that used to
+    # leave a poisoned breaker behind.
+    for _ in range(vlm.BREAKER_TRIP + 1):
+        vlm._breaker_note("lightning", ok=False)
+    assert vlm._breaker_open("lightning"), "precondition: the breaker is open"
+
+    install(monkeypatch, Recorder(["3"] * 8))
+    ballot.vote_batch(
+        [FakeBuilding("third", conf=0.6, caption="c"), FakeBuilding("fourth", conf=0.6, caption="d")],
+        k=8,
+        budget_s=30.0,
+    )
+    assert ballot.last_sweep()["budget_hit"] is True
+    assert not vlm._breaker_open("lightning"), "a partly-served sweep heals the breaker"
 
 
 def test_uncertain_only_spends_a_tight_budget_on_the_least_certain(store, monkeypatch):

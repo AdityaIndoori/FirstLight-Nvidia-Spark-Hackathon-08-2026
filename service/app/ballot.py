@@ -91,10 +91,17 @@ MIN_MODEL_SAMPLES = 3
 CHOICES = ("0", "1", "2", "3")
 SAMPLE_MAX_TOKENS = 4
 
-# A tile's ballot has to fit inside the plan's 10 s per-tile budget alongside VL
-# grading, so the per-tile path is bounded by BOTH a wall clock and a count.
+# Bounded by BOTH a wall clock and a count, and both are measured. On this box a
+# 12-building tile ballots in 5.1 to 5.4 s wall clock for 12 of 12 model ballots;
+# at 4 s it came in on time but only 8 of 12 rows reached the model and the rest
+# fell back to grader confidence. 7 s buys full coverage with headroom.
+#
+# It fits because VL grading, not the ballot, is what dominates a tile: measured
+# end to end, 38 to 41 s per 12-crop tile against the plan's 10 s target, which is
+# grading.py's own budget problem and is why DEFAULT_TILE_VL_SECONDS exists. The
+# ballot is under 15% of that and the cap keeps it there.
 DEFAULT_SWEEP_BUDGET_S = 45.0
-DEFAULT_TILE_BUDGET_S = 4.0
+DEFAULT_TILE_BUDGET_S = 7.0
 DEFAULT_TILE_MAX_BUILDINGS = 12
 
 # A column of identical floors reads as decoration, so the threshold that calls
@@ -374,8 +381,20 @@ class _Sample:
     ended: float
 
 
-def _sample(facts: dict, neighbours: Sequence[int], temperature: float, timeout: float) -> _Sample:
+def _sample(
+    facts: dict, neighbours: Sequence[int], temperature: float, deadline: Optional[float]
+) -> _Sample:
+    """One guided sample. The deadline is read HERE, not where the task was queued.
+
+    That distinction is a measured bug fix. With 16 workers and 96 samples a task
+    sits in the queue for seconds, so a timeout computed at submit time bounds each
+    call individually and the SWEEP overruns: a 12-building tile spent 5623 ms
+    against a 4 s budget, measured on the box. Reading the clock at execution makes
+    the budget bound the sweep, and the queued tail turns into instant labelled
+    stubs the moment the deadline passes.
+    """
     started = time.perf_counter()
+    timeout = _timeout_for(deadline)
     if timeout <= 0.0:
         # Past the budget. Do not open a socket we have no time to read.
         return _Sample(None, vlm.GRADE_HOW_STUB, started, started)
@@ -485,11 +504,21 @@ def _ballot(
     return _result_from(facts, int(k), samples)
 
 
+# A sample needs at least this much of the budget left to be worth a round trip.
+# Below it we stub without calling, because a call we cut off ourselves would be
+# charged to the endpoint by vlm's circuit breaker: measured on the box, a tile
+# whose budget expired mid-sweep tripped the breaker and the NEXT tile got instant
+# stubs for 30 s from a Lightning that was perfectly healthy. Our budget is our
+# problem, so it must never look like the endpoint's fault.
+MIN_SAMPLE_S = 0.75
+
+
 def _timeout_for(deadline: Optional[float]) -> float:
     cap = float(config.LLM_TIMEOUT_S)
     if deadline is None:
         return cap
-    return min(cap, deadline - time.monotonic())
+    left = deadline - time.monotonic()
+    return min(cap, left) if left >= MIN_SAMPLE_S else 0.0
 
 
 def vote(
@@ -511,7 +540,7 @@ def vote(
     with ThreadPoolExecutor(max_workers=k, thread_name_prefix="ballot") as pool:
 
         def submit(f: dict, ctx: Sequence[int], temp: float, dl: Optional[float]):
-            return pool.submit(_sample, f, ctx, temp, _timeout_for(dl))
+            return pool.submit(_sample, f, ctx, temp, dl)
 
         return _ballot(
             facts,
@@ -597,7 +626,7 @@ def vote_batch(
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ballot") as pool:
 
         def submit(f: dict, ctx: Sequence[int], temp: float, dl: Optional[float]):
-            return pool.submit(_sample, f, ctx, temp, _timeout_for(dl))
+            return pool.submit(_sample, f, ctx, temp, dl)
 
         # Assemble every building's futures first so the samples of one ballot are
         # in flight together, then collect. Collecting per building would
@@ -615,7 +644,25 @@ def vote_batch(
             results.append(_result_from(facts, k, [f.result() for f in futures]))
 
     wall_ms = int((time.perf_counter() - t0) * 1000)
-    budget_hit = bool(deadline is not None and time.monotonic() >= deadline)
+    # "The budget cut this sweep short", not "the clock crossed a line". Sampling
+    # stops MIN_SAMPLE_S before the deadline, so the clock may never pass it even
+    # though the tail was skipped, and the HUD needs the fact rather than the
+    # timestamp. A row that reached the model somewhere proves the endpoint was
+    # alive, so a stub beside it is our budget's doing.
+    budget_hit = bool(
+        deadline is not None
+        and any(r.how == vlm.GRADE_HOW_STUB for r in results)
+        and (
+            any(r.how == vlm.GRADE_HOW_MODEL for r in results)
+            or time.monotonic() >= deadline - MIN_SAMPLE_S
+        )
+    )
+    if budget_hit and any(r.how == vlm.GRADE_HOW_MODEL for r in results):
+        # The endpoint answered for some rows, so it is alive. Clear any breaker
+        # state our own cutoff contributed, or the NEXT tile would get instant
+        # stubs from a healthy Lightning for the length of the cooldown, which is
+        # exactly the confusing failure we measured on the box.
+        vlm.reset_breakers()
     _note_sweep(results, k, temperature, wall_ms, selection, budget_hit)
     return results
 

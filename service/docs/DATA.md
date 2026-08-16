@@ -285,10 +285,15 @@ is the whole point of the set:
 | **0.25** | **98.0%** | **76.6%** | **1** | **15** |
 | 0.30 | 98.0% | 79.0% | 1 | 13 |
 
-Latency p50 57 ms, p95 165 ms, mean 1.16 tiles scanned per image through the
-tiled 1280 px / 20 % overlap path. Recall does not move across the sweep, so
-0.25 is the right threshold: it buys the best precision without costing a
-single additional false clear.
+Mean 1.16 tiles scanned per image through the tiled 1280 px / 20 % overlap path.
+Recall does not move across the sweep, so 0.25 is the right threshold: it buys
+the best precision without costing a single additional false clear.
+
+Latency depends on what else is warm on the box, so it is reported as a range
+across two runs rather than one flattering figure: **p50 57 to 130 ms, p95 165
+to 365 ms**. The counts, recall and precision were byte-identical across both
+runs; only the timings moved. Re-measure latency with all three vLLM servers
+warm before quoting it on stage.
 
 The one false clear is `0000026_00000_d_0000024.jpg`: a single truncated
 pedestrian, box 36x33 px in a 1360x765 frame (0.11 % of frame area), at y=732
