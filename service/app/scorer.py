@@ -194,14 +194,68 @@ def flip_grade(footprint_id: str, new_class: int, operator: str) -> dict:
 
 
 # --------------------------------------------------------------- agency plan
+# How a damaged structure becomes somebody's assignment.
+#
+# WHY a table of predicates rather than one model call: an Ops Chief has to see
+# why a building landed with a given agency, and defend it to that agency. The
+# model drafts wording and ordering in B6; the agency choice stays inspectable.
+#
+# Evaluated in order, first match wins, so the most specific claim comes first: a
+# collapsed nursing home is an EMS job even though it is also a collapse.
 AGENCY_RULES = (
-    # (agency, predicate on a rank row, task template, units)
-    ("ems", lambda it: bool(it.get("facility_near")), "welfare check and evacuation support", 2),
+    # EMS owns people who cannot self-evacuate, whatever the structure did.
+    (
+        "ems",
+        lambda it: _near_facility(it, within_m=300),
+        "care facility welfare check, residents cannot self-evacuate",
+        2,
+    ),
+    # A destroyed structure is a search job: somebody may be inside it.
     ("fire", lambda it: it["damage_class"] >= 3, "collapse search, possible entrapment", 3),
+    # EMS also takes high-uncertainty severe cases: "we cannot tell how bad this
+    # is" plus "people live here" is a medical unknown, not a structural one.
+    (
+        "ems",
+        lambda it: it["damage_class"] >= 2 and float(it["inputs"].get("doubt") or 0) >= 0.5,
+        "casualty assessment, damage extent unresolved",
+        1,
+    ),
+    # Police own access control around a cut-off or collapsed area. The perimeter
+    # exists so the other three agencies can work.
+    (
+        "police",
+        lambda it: (it["inputs"].get("road_cutoff") or 0) > 1 or it["damage_class"] >= 3,
+        "scene perimeter and access control",
+        1,
+    ),
+    # Public Works clears what is stopping everyone else from arriving.
+    (
+        "public_works",
+        lambda it: (it["inputs"].get("road_cutoff") or 0) > 1,
+        "debris clearance to open access",
+        1,
+    ),
     ("fire", lambda it: it["damage_class"] == 2, "structure damage assessment", 2),
-    ("public_works", lambda it: (it["inputs"].get("road_cutoff") or 0) > 1, "debris clearance to open access", 1),
-    ("police", lambda it: False, "perimeter and closure posting", 2),
+    # Public Works also handles the lighter backlog: a minor-damage structure
+    # needs debris and utility work, not a fire crew.
+    ("public_works", lambda it: it["damage_class"] == 1, "debris and utility check", 1),
 )
+
+
+def _near_facility(item: dict, *, within_m: int = 300) -> bool:
+    """True when this building is close enough to a care facility to be EMS work.
+
+    Reads the joined facility rather than re-deriving distance, so the rank card
+    and the dispatch assignment can never disagree about which buildings sit near
+    a nursing home.
+    """
+    fac = item.get("facility_near")
+    if not fac:
+        return False
+    try:
+        return int(fac.get("dist_m", within_m + 1)) <= within_m
+    except (TypeError, ValueError):
+        return False
 
 
 def _agency_route(agency: str, rows: list[dict]) -> Optional[dict]:
@@ -231,31 +285,47 @@ def _agency_route(agency: str, rows: list[dict]) -> Optional[dict]:
     return out
 
 
-def build_plan(limit: int = 12, drafted_by: str = "stub-rules-v1") -> dict:
+def build_plan(
+    limit: int = 12, drafted_by: str = "stub-rules-v1", *, per_agency: int = 5
+) -> dict:
     """Draft assignments grouped by agency.
 
-    Nemotron drafts this in B6; until then a labelled deterministic rule set
-    keeps the panel real, and `drafted_by` says which ran so the status strip
-    never implies a model that did not run.
+    Nemotron drafts this in B6; until then a labelled deterministic rule set keeps
+    the panel real, and `drafted_by` says which ran so the status strip never
+    implies a model that did not run.
+
+    WHY the cap is per agency and not a single top-N: taking the highest-priority
+    N rows overall hands every step to whichever agency the current damage
+    profile favours. A tile of uniform major damage gave Fire all twelve, and once
+    the doubt rule was added it gave EMS all twelve, and both are wrong for the
+    same reason. An Ops Chief needs the top few jobs FOR EACH AGENCY, because Fire
+    being busy does not mean Police has nothing to do. So: scan the whole ranked
+    list, let each row claim its one agency, and keep each agency's highest few.
     """
-    ranked = rank(limit=limit)["items"]
+    ranked = rank(limit=max(limit * 20, 200))["items"]
     steps: dict[str, list[dict]] = {a: [] for a in contracts.AGENCIES}
+    cap = max(1, int(per_agency))
     for it in ranked:
         for agency, pred, task, units in AGENCY_RULES:
             try:
-                if pred(it):
-                    steps[agency].append(
-                        {
-                            "footprint_id": it["footprint_id"],
-                            "label": it["label"],
-                            "centroid": it["centroid"],
-                            "task": task,
-                            "units": units,
-                        }
-                    )
-                    break
-            except (KeyError, TypeError):
+                if not pred(it):
+                    continue
+            except (KeyError, TypeError, ValueError):
                 continue
+            # One row, one agency: a building assigned twice is two crews sent to
+            # the same door. First matching rule wins, which is why the rule order
+            # encodes precedence.
+            if len(steps[agency]) < cap:
+                steps[agency].append(
+                    {
+                        "footprint_id": it["footprint_id"],
+                        "label": it["label"],
+                        "centroid": it["centroid"],
+                        "task": task,
+                        "units": units,
+                    }
+                )
+            break
 
     blocked = db.q("SELECT road_name, geom_json FROM road_blocks WHERE blocked = 1")
     for row in blocked:
