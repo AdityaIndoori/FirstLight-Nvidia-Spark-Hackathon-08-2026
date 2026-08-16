@@ -10,9 +10,9 @@ Team plan for the NVIDIA DGX Spark Hackathon, August 2026. Three builders, one w
 
 After Hurricane Helene, roughly 74% of cell towers in the worst-hit counties failed ([FCC report](https://docs.fcc.gov/public/attachments/DOC-406055A1.pdf)). That is exactly when drone teams are collecting hundreds of gigabytes of damage imagery that can reach no cloud.
 
-FIRST LIGHT is a county-owned box that turns a live drone downlink into a ranked, navigable rescue plan with zero connectivity:
+FIRST LIGHT is a county-owned box that turns a live drone downlink into a ranked, navigable rescue plan with no cloud and no dependency on connectivity:
 
-`privacy gate -> damage grading -> vulnerability join -> auditable ranking -> next-flight tasking -> FEMA paperwork`
+`ingest every tile -> outlines + damage grade -> vulnerability join -> uncertainty cross-examination -> auditable ranking -> next-flight tasking -> FEMA paperwork`, with the privacy gate guarding what gets **stored**
 
 Two things make it a winner rather than a dashboard:
 
@@ -52,16 +52,16 @@ Not built yet, by plan: NemoClaw + OpenShell containment (B5), the wired pipelin
 | Completeness: full workflow, no crash | Downlink to export, end to end | Tiles arrive and paint one by one |
 | Streaming input (See track) | Frames stream to the box **during** the demo and are processed on arrival | Per-tile end-to-end latency on the HUD |
 | Multi-step agent, branching (Do track) | rank -> find stale sectors -> task flight -> re-rank; invalid model output triggers a **self re-prompt with the validation error** before any fallback | Replan beat plus a visible self-correction, labelled "model recovered" vs "stub engaged" |
-| NVIDIA stack | Nemotron Nano 9B v2 and Nemotron 3.5 Lightning, both local vLLM; NemoClaw agent inside OpenShell | Status bar names every model; audit panel is live |
-| Spark story | **Six models** plus county GIS resident together, zero swap, in a 240 W box a county can own and run in a parking lot with the internet gone. Imagery never leaves the county. | Memory gauge and power figure on the HUD |
+| NVIDIA stack | Nemotron Nano 9B v2, Nemotron 3.5 Lightning and Nemotron Nano 12B v2 VL, all three local on vLLM; NemoClaw agent inside OpenShell | Status bar names every model; audit panel is live |
+| Spark story | **Seven models** plus county GIS resident together, zero swap, in a 240 W box a county can own and run in a parking lot with no connectivity. Imagery never leaves the county. | Memory gauge and power figure on the HUD |
 | Value and impact | An EOC gets a door-by-door plan the first morning, and every rank is auditable. Property value never enters life-safety ranking. | Rank rows show their formula inputs; the judge checks the arithmetic |
 | Usable tomorrow | Locate, Navigate (printable turn-by-turn that avoids blocked roads), one-click FEMA PDA and ICS-213 | The judge drives it unaided |
-| Technical depth: retrieval | A real local RAG path - vision caption, tag extraction, embeddings, cosine retrieval, cited answers - with the privacy rule enforced *in the index writer* so withheld imagery is unreachable by construction | Judge types "buildings on fire" and gets pins; then searches for the withheld image and finds nothing |
-| Usability: dispatch-shaped output | The plan is grouped by agency with unit counts, not one undifferentiated list - Fire, EMS, Police and Public Works each with numbered routes and printable directions | Judge reassigns a step and watches the numerals and unit totals update |
-| Innovation | A closed perception-decision loop nobody deploys, plus a live containment drill | Spoken contrast and a witnessed policy denial |
+| Technical depth: retrieval | A real local RAG path, vision caption, tag extraction, embeddings, cosine retrieval, cited answers, with the privacy rule enforced *in the index writer* so person imagery is unstorable by construction | Judge types "buildings on fire" and gets pins; then searches for the person tile and finds nothing, even though it ranked |
+| Usability: dispatch-shaped output | The plan is grouped by agency with unit counts, not one undifferentiated list: Fire, EMS, Police and Public Works each with numbered routes and printable directions | Judge reassigns a step and watches the numerals and unit totals update |
+| Innovation | A closed perception-decision loop nobody deploys, plus a live containment drill where policy discriminates by destination instead of blanket-denying | Spoken contrast and a witnessed policy denial beside a witnessed policy allow |
 | Performance | **Measured, never quoted**: speculative-decoding before/after tokens per second, co-resident replan p95, per-tile latency | HUD numbers captioned "measured on this Spark" |
 
-**Name the rival before a judge does.** NVIDIA's VSS blueprint does excellent streaming video analytics, but as shipped it assumes NGC keys, an AI Enterprise licence and datacenter GPUs - a hard fit for an air-gapped county EOC. We ship the decision loop and the federal paperwork VSS does not, fully offline. That is the answer to "why not just use VSS?"
+**Name the rival before a judge does.** NVIDIA's VSS blueprint does excellent streaming video analytics, but as shipped it assumes NGC keys, an AI Enterprise licence and datacenter GPUs, a hard fit for an offline county EOC. We ship the decision loop and the federal paperwork VSS does not, with no cloud dependency. That is the answer to "why not just use VSS?"
 
 ---
 
@@ -69,26 +69,36 @@ Not built yet, by plan: NemoClaw + OpenShell containment (B5), the wired pipelin
 
 ```mermaid
 flowchart LR
-    DL[Drone downlink<br/>streamed frames + SD card fallback] --> GATE[Privacy gate<br/>person detector<br/>withhold by default]
-    GATE -->|clear tiles only| LOC[Building outlines<br/>xView2 loc ensemble<br/>single-image, works as-is]
-    LOC --> SEG[Damage grading<br/>Nemotron Nano 12B v2 VL primary<br/>xView2 cls when pre-imagery exists]
-    GATE -->|withheld| REVIEW[Restricted review queue]
-    SEG --> JOIN[Vulnerability join<br/>footprints + CMS + SVI + roads]
-    JOIN --> SCORE[Priority scorer<br/>staleness x vulnerability x doubt<br/>append only decision log]
+    DL[Drone downlink<br/>streamed frames + SD card fallback] --> IN[Ingest - ALL tiles pass<br/>a person in frame is rescue signal<br/>privacy applies to storage, not analysis]
+    IN --> LOC[Building outlines<br/>xView2 loc ensemble<br/>single-image, works as-is]
+    LOC --> SEG[Damage grade + caption<br/>Nemotron Nano 12B v2 VL, one pass<br/>xView2 cls when pre-imagery exists]
+    SEG --> JOIN[Vulnerability join<br/>footprints + PIN + CMS + SVI + roads]
+    SEG -->|grade + caption, direct| LIGHT[Nemotron 3.5 Lightning - text-only<br/>k=8 ballot cross-examines grade vs caption<br/>doubt = 1 - agreement, batch tags, FEMA rows]
+    JOIN -->|context only| LIGHT
+    JOIN -->|vulnerability| SCORE
+    LIGHT -->|doubt| SCORE[Priority scorer<br/>severity x staleness x vulnerability x doubt<br/>append-only decision log]
+    SEG -->|candidates to store| GATE[Privacy gate - guards STORAGE<br/>VisDrone YOLOv8x, tiled inference]
+    GATE -->|person signal| VAULT[Withheld vault<br/>analyzed, never stored or searched]
+    GATE -->|cleared only| ARCH[Archive + search<br/>BGE-small, SQLite, no vector DB]
     SCORE --> AGENT[NemoClaw agent - Nemotron Nano 9B v2<br/>flight tasking, hero rationale, ICS-213<br/>reasoning ON for replan]
-    AGENT --> LIGHT[Nemotron 3.5 Lightning<br/>k=8 self consistency vote over 50 grades<br/>batch rationales, FEMA rows]
-    LIGHT --> UI[Operator console<br/>MapLibre offline, rank, navigate, exports]
-    AGENT --> UI
-    UI -->|grade flips, road blocks| SCORE
+    AGENT --> UI[Operator console<br/>MapLibre offline, rank, navigate, exports]
+    ARCH --> UI
+    UI -->|grade flips, road blocks, availability| SCORE
     AGENT -->|next flight box| DL
+    AGENT -->|refresh_dataset by NAME| LIB[Data librarian<br/>only component touching the network<br/>GET-only allowlist, never a URL]
+    LIB --> STORE[Local data store<br/>works at zero connectivity]
+    STORE --> JOIN
 
-    subgraph SHELL[OpenShell sandbox - network live, egress denied by policy]
-        GATE
+    subgraph SHELL[OpenShell sandbox - network live, egress allowlisted by policy]
+        IN
+        LOC
         SEG
         JOIN
         SCORE
         AGENT
         LIGHT
+        GATE
+        LIB
     end
 ```
 
@@ -124,7 +134,7 @@ The Spark is 128 GB unified memory at **273 GB/s**. Bandwidth is the real constr
 | xView2 first-place ensemble (24 checkpoints on box) | **loc** models: building outlines from a single post image - work as-is, run always. **cls** models: pre+post damage grading - run only when cached pre-event basemap chips cover the tile | Public challenge weights with a published score. Never fake the pre image by duplicating post - the model reads "no change" as "no damage", the worst bias a triage tool can have | - |
 | Person detector (**VisDrone-trained YOLOv8x**, in-process) | Privacy gate, before anything else reads a tile. VisDrone training = people at aerial scale, where COCO-trained detectors go blind | Fast, conservative (0.25 threshold, person classes only, withhold-on-error), and its recall is measurable. Weekend hardening: SAHI-style tiled inference for full-resolution tiles | - |
 | Text embedder (BGE-small-en-v1.5, in-process, CPU) | Embeds captions and search queries, 384-dim, normalized | Search must work offline with no service. 0.4 GB buys the whole semantic surface; CPU is milliseconds at this scale | - |
-| **NemoClaw + OpenShell** | The planner runs as a NemoClaw agent inside the OpenShell sandbox. Policy: deny all egress, filesystem scoped to `./data`, localhost inference only, rules at binary and destination level, scrollable audit feed in the UI | Out-of-process enforcement the agent cannot override, and we prove it live | NemoClaw + OpenShell |
+| **NemoClaw + OpenShell** | The planner runs as a NemoClaw agent inside the OpenShell sandbox. Policy: localhost inference allowed, five named sources allowed **GET-only**, every other destination denied; filesystem scoped to `./data`; rules at binary and destination level; scrollable audit feed in the UI. The agent's only network tool is `refresh_dataset(name)`: it names datasets, never URLs, so the fetch primitive an injected instruction would need does not exist | Out-of-process enforcement the agent cannot override, and we prove it live with three verdict classes on one screen: a localhost allow, an approved-source allow, and a deny | NemoClaw + OpenShell |
 
 ### The Lightning ballot - what exactly is voted, and why it changes the ranking
 
@@ -190,9 +200,9 @@ One **Upload drone images** button (multi-select, or the SD-card watcher, or the
 
 | Stage | What it does | What the operator sees |
 |---|---|---|
-| **1. Privacy check - humans** | Person detector runs first, always. Any signal, or any detector error, withholds the image | `12 clear, 1 withheld for authorized review` |
-| **2. Damage spotting - buildings** | Seg model outlines every building and grades it 0-3 | `47 buildings outlined, 9 severe` |
-| **3. Vulnerability indexing - people in buildings** | Join to footprints, care facilities, SVI; Lightning's ballot computes doubt; the archive gets its caption and embedding | `ranked, indexed, searchable` |
+| **1. Analyzing - buildings** | xView2 loc outlines every building, the VL model grades each 0-3 and writes one caption | `47 buildings outlined, 9 severe` |
+| **2. Indexing - people in buildings** | Join to footprints, care facilities, SVI; Lightning's ballot computes doubt; the ranking updates | `ranked` |
+| **3. Storage decision - privacy gate** | The person detector runs on the tile before it can be written to the archive. Person signal, or any detector error, sends it to the withheld vault | `12 stored and searchable, 1 withheld: analyzed, not stored` |
 
 **When a stage fails, the card says so.** A stage never fails silently: the card shows `stage 2 failed - seg model unavailable, fell back to labelled stub` or `stage 3 skipped - no location yet`, and the image stays in the list with what it does have. An operator can always see which of the three stages an image actually cleared.
 
@@ -249,10 +259,10 @@ One search bar. Three kinds of query, all offline, all local:
 
 | Channel | Control | Residual |
 |---|---|---|
-| Pixels | Withheld images are never written to the index. One ingest door, gate first. | Bounded by the measured gate recall (published, A5) |
-| **Captions** | The captioner is prompted and post-filtered to describe **structures, terrain and water only**. Any caption mentioning a person, body or clothing is dropped and the image is re-withheld for review. | A caption is a second chance to catch what the detector missed, not a second way to leak |
+| Pixels | Person tiles are never written to the archive. One storage door, and the check lives in the writer, so the add-image button and the metadata-edit path re-run it. | Bounded by the measured gate recall through the tiled path (published, A5) |
+| **Captions** | The captioner is prompted and post-filtered to describe **structures, terrain and water only**. Any caption mentioning a person, body or clothing is dropped and the image is re-withheld. | A caption is a second chance to catch what the detector missed, not a second way to leak |
 
-So the claim we make on stage is precise: *withheld pixels are never indexed, the add and edit paths re-run the same gate, and the captioner is constrained not to write about people.* Not "unreachable, full stop" - a judge can falsify absolutes, and this one does not need them.
+So the claim we make on stage is precise: *a tile with people in it is used for grading and ranking, because that is rescue signal, and it is never stored, indexed, thumbnailed or searchable; the add and edit paths re-run the same gate; and the captioner is constrained not to write about people.* Not "unreachable, full stop" - a judge can falsify absolutes, and this one does not need them.
 
 ### 5.4 Part four - the grounded assistant (optional, and only if it is not a chatbot)
 
@@ -278,41 +288,42 @@ Each member pairs with an AI coding agent. Section 8 is the technique; Appendix 
 | # | Deliverable | Detail |
 |---|---|---|
 | A1 | Streaming ingest | Receive frames over **RTSP** (frozen choice - the defensible "real downlink" story) plus watch-folder and SD-card fallback; content-hash dedup; emit per-tile end-to-end latency |
-| A2 | Privacy gate | Person detection **before any other component reads the tile**; withhold to a restricted queue; detector error also withholds; fixture test proves a person tile never appears in any API response except the authorized review endpoint |
+| A2 | Privacy gate (guards STORAGE) | **Pivoted, and this is the sharper design.** All tiles are analyzed: a person in frame is rescue signal, so withholding it from grading would throw away the very information triage needs. The gate sits in front of the **archive writer**, not in front of analysis. Person signal, or any detector error, sends the image to the withheld vault: analyzed, never stored, never searchable, never thumbnailed. Includes **SAHI-style tiled inference** (overlapping 1280 px crops, union of verdicts) because a person downscaled to 640 px is about 5 px tall and no detector sees that. Fixture test asserts BOTH directions: the person tile DOES contribute buildings to the rank, and does NOT appear in the archive, search results, thumbnails, or any API surface except the authorized review endpoint |
 | A3 | Damage grading | Split by what the weights actually take (verified in the ensemble code: cls models concat pre+post into 6 channels): **xView2 loc** for outlines, single-image, always on; **VL grading** (Nano 12B v2 VL, guided 0-3 per crop) as primary grader; **xView2 cls** as a second grader only where cached pre-event basemap chips cover the tile. Never feed post as fake pre - "no change" reads as "no damage". All behind one `grade()` signature, active path named in the status bar |
-| A4 | Data joins | **Verified available for the demo AOI (queried live)**: Seattle Building Outlines 2023 (27,250 footprints in the West Seattle bbox, each carrying a parcel `PIN` - identity is a key join, not spatial matching), King County parcels (22,359 in bbox) + KC address points, CMS Care Compare (facility-level only), CDC SVI block groups. Owner names dropped at ingest - the KC assessor join can surface them, so A4 names the columns to drop. Friday: page both ArcGIS REST endpoints to GeoJSON (~25 pages each), resident before the internet goes away |
-| A5 | Gate eval | Person-recall on 100 held-out tiles, number published in the README |
-| A6 | Archive indexer | For cleared images only: local vision caption, tag extraction, normalized embedding, all written to SQLite. Withheld images are never indexed - enforce it in the writer, not by convention |
+| A4 | Data joins | **Verified available for the demo AOI (queried live)**: Seattle Building Outlines 2023 (27,250 footprints in the West Seattle bbox, each carrying a parcel `PIN`, so identity is a key join, not spatial matching), King County parcels (22,359 in bbox) + KC address points, CMS Care Compare (facility-level only), CDC SVI block groups. **Rural fallback tier: Microsoft GlobalMLBuildingFootprints** (1.4B ML-derived polygons, geometry only, no addresses) for counties without a GIS department, which is the real customer. Owner names dropped at ingest: the KC assessor join can surface them, so A4 names the exact columns to drop. Friday: page both ArcGIS REST endpoints to GeoJSON (~25 pages each), resident before the internet goes away |
+| A5 | Gate eval | Person-recall on 100 held-out **real aerial** tiles measured **through the tiled path**, not a single downscaled pass. The confidence threshold is then set FROM that measurement (drop below 0.25 if recall demands it: a false withhold costs an operator one review click, a false clear costs the whole privacy claim). Number published in the README |
+| A6 | Archive indexer, the only privacy enforcement point | For gate-cleared images only: VL caption and grade come from **one pass** (never call the VLM twice per crop), Lightning batch tag extraction, normalized embedding, all written to SQLite. Withheld images are never indexed: enforce it **in the writer**, so it holds for the add-image button and the metadata-edit path too. **BGE runs on CPU**, pinned: with three vLLM pools resident the GPU allocator is full and it OOMs (verified). Caption post-filter re-withholds any caption mentioning a person, body or clothing |
 | A7 | Geo fallback chain | GeoTIFF transform, then EXIF GPS, then sidecar, then `needs_geo` for operator drag-to-place. Never silently drop an image |
+| A8 | Dataset refresh through the Librarian | The allowlist manifest: each dataset keyed **by name** (`noaa_storm_imagery`, `ms_building_footprints`, `cms_facilities`, `cdc_svi`, `xview2_labels`), GET-only, checksum verified on arrival, atomic swap into the local store, `last_refreshed` timestamp surfaced in the UI. The agent asks by name and can never supply a URL, so a hijacked agent has no fetch primitive to abuse. Everything works at zero connectivity from the local store |
 
 ### Member B - Decision and Agent
 *Motto: every rank auditable, every number measured.*
 
 | # | Deliverable | Detail |
 |---|---|---|
-| B1 | Priority scorer | `priority = staleness x vulnerable_density x doubt [x road_cutoff]`. Round each factor to 3 decimals **first**, then multiply, so the on-screen product reconciles exactly. Operator-confirmed severe damage (class >= 2) pins to the top. Append-only log enforced by SQL triggers |
-| B2 | NemoClaw agent | Nano 9B v2 on vLLM at `--gpu-memory-utilization 0.25`; reasoning on for flight tasking, `/no_think` elsewhere; guided JSON; on schema-invalid output **re-prompt once with the validation error** before any stub; expose a demo flag that forces one invalid first attempt so the recovery path is demonstrable on demand; measure co-resident p95 |
-| B3 | Lightning layer | vLLM at `--gpu-memory-utilization 0.35`, 4-bit weights; speculative decoding configured and measured; batch-size sweep; k=8 self-consistency vote; before/after numbers to the HUD |
-| B4 | Offline routing | Dijkstra over the OSM node graph; blocked roads banned at edge level (by name and geometrically); when no clean route exists, say so loudly and never silently |
-| B5 | Containment | NemoClaw inside OpenShell; policy file; both stage beats; audit feed API; the bounty write-up |
-| B6 | Agency plan builder | Nemotron drafts assignments grouped by agency (Fire / EMS / Police / Public Works) with `units_required`; flags over-commitment against `units_available`; every operator edit re-logged. Guided JSON, schema in section 7 |
+| B1 | Priority scorer | `priority = severity_weight x staleness x vulnerable_density x doubt [x road_cutoff]`. **`severity_weight` is new and non-optional**: `{0: 0.25, 1: 0.5, 2: 1.0, 3: 1.5}` by damage class. Without it an intact class-0 building the models cannot agree on outranks an unconfirmed class-3 collapse they agree about, and a judge with a calculator finds that in one screen. Round each factor to 3 decimals **first**, then multiply, so the on-screen product reconciles exactly. Operator-confirmed severe damage (class >= 2) pins to the top as a sort tiebreaker only, never by inflating `priority`. Append-only log enforced by SQL triggers |
+| B2 | NemoClaw agent | Nano 9B v2 on vLLM at `--gpu-memory-utilization 0.25`; reasoning on for flight tasking, `/no_think` elsewhere. **Structured output on this build: top-level `guided_json` is silently ignored, so use `response_format: {type: "json_schema"}` for objects and `guided_choice` for enumerated picks (both verified on the box).** On schema-invalid output **re-prompt once with the validation error** before any stub; expose a demo flag that forces one invalid first attempt so the recovery path is demonstrable on demand; measure co-resident p95 with all three servers warm |
+| B3 | Lightning layer | vLLM at `--gpu-memory-utilization 0.35`, NVFP4 weights (21 GB measured, not the 17 GB estimated); speculative decoding with NVIDIA's **DSpark drafter** configured and measured before/after; batch-size sweep; k=8 vote. **Ballot input includes the VL caption**, so the vote cross-examines grade against caption against join context rather than re-reading one number. **Lightning ignores `/no_think`** (that is Nano syntax) and will emit a thinking preamble as plain content: structured decoding is what tames it. **Publish the doubt DISTRIBUTION, not just the mean**: our first ballot came back 8/8 unanimous (doubt at the 0.05 floor), and a column of identical floors reads as decoration. If the distribution is degenerate, raise temperature or vote only on the top-N least-certain buildings, and say which |
+| B4 | Offline routing | Dijkstra over the OSM node graph; blocked roads banned at edge level (by name **and** geometrically). **Routes must follow the road graph with real turns**: a straight diagonal through city blocks destroys the one claim this feature exists to make. A closure posts at **both ends** of the blocked segment, because that is what closing a road means. When no clean route exists, say so loudly and never silently |
+| B5 | Containment | NemoClaw inside OpenShell; policy file; audit feed API; the bounty write-up. **Policy is no longer blanket deny-egress**: it allows localhost inference plus five GET-only approved destinations, which is a *stronger* demo because the judge watches policy discriminate rather than blanket-refuse. Three verdict classes on one screen. **New beat:** the agent's `refresh_dataset("noaa_storm_imagery")` succeeds and prints an allow line, while the same agent's request to an off-allowlist address is denied, then its attempt to widen the policy is denied. The agent can only name datasets, never supply URLs, so the fetch primitive it would need for exfiltration does not exist in its tool surface |
+| B6 | Agency plan builder | Nemotron drafts assignments grouped by agency (Fire / EMS / Police / Public Works) with `units_required`; flags over-commitment against `units_available`; every operator edit re-logged. **Availability changes never silently re-draft the plan**: the operator saves the numbers (logged, with name and time), then explicitly triggers the re-draft. Guided JSON per B2's verified syntax, schema in section 7 |
 | B7 | Archive search + batch tagging (Lightning) | Three resolvers behind one endpoint: location (geocode against local OSM tables), semantic (cosine over caption embeddings in NumPy), structured filter (SQL). Returns thumbnails + map pins. No vector DB, no service |
-| B8 | LLM eval, gate 9 | (a) rationale faithfulness: cited inputs equal scorer inputs, auto-checked; (b) FEMA field accuracy on a small labeled set; (c) two agreement numbers: Lightning self-agreement and Lightning-versus-Nano agreement; (d) agency-plan correctness on a small labeled set (fires to Fire, care facilities to EMS) plus unit-count sanity; (e) tag precision and recall against the caption; **(e2) search recall@k and precision@k on 20 held-out queries with known-relevant image IDs** - the number that turns "we built retrieval" into "we measured it"; (f) assistant citation faithfulness - sampled answers whose cited image IDs actually support the claim, and refusal verified on empty retrieval; (g) injection battery: N hostile captions must produce **0 altered grades and 0 altered FEMA fields**, plus a policy-tamper attempt that OpenShell denies. All four published with their pass criteria |
+| B8 | LLM eval, gate 9 | (a) rationale faithfulness: cited inputs equal scorer inputs, auto-checked; (b) FEMA field accuracy on a small labeled set; (c) three agreement numbers: Lightning self-agreement, Lightning-versus-grader agreement, **and the doubt distribution across all graded buildings**; **(c2) VL grading accuracy against ~50 hand-labeled buildings, because the primary grader no longer inherits xView2's published challenge score and we owe a number of our own**; (d) agency-plan correctness on a small labeled set (fires to Fire, care facilities to EMS) plus unit-count sanity; (e) tag precision and recall against the caption; **(e2) search recall@k and precision@k on 20 held-out queries with known-relevant image IDs**, the number that turns "we built retrieval" into "we measured it"; (f) assistant citation faithfulness, sampled answers whose cited image IDs actually support the claim, and refusal verified on empty retrieval; (g) injection battery: N hostile captions must produce **0 altered grades and 0 altered FEMA fields**, plus a policy-tamper attempt and an off-allowlist fetch attempt that OpenShell denies. All published with their pass criteria |
 
 ### Member C - Operator Console and Demo
 *Motto: readable from the back of the room.*
 
 | # | Deliverable | Detail |
 |---|---|---|
-| C1 | Map console | MapLibre with pre-downloaded dark and satellite tiles; damage polygons; facility markers as a medical cross, never a blue dot; blocked roads red; flight box plus survey path |
-| C2 | Rank panel | Address labels from real data, not raw IDs; formula inputs visible; confidence and doubt bars; grade-flip logged by operator name; Locate and Navigate buttons per row |
-| C3 | Upload + stage tracker | The **Upload drone images** button and the three-stage progress card (privacy check, damage spotting, vulnerability indexing) with live per-image counts |
-| C4 | Agency plan panel | Numbered routes per agency, one colour each, big legible numerals; **reassign first** (that is the demoed edit), then add / reorder / edit / delete; operator-entered availability with the Order column; printable per agency |
-| C5 | Flight plan panel | Show the proposed area and survey path, plus the export menu. **Waypoint drag/insert/delete and the draw-a-grid tool are stretch** - build them only after gates 1-8 are green, because nothing scores them |
-| C6 | Archive panel | One search bar, thumbnail grid plus map pins, add-image (through the ingest door), and caption/tag editing. Re-embed on save is stretch |
-| C7 | Aid package | One **Download aid package** button: FEMA PDA, ICS-213, ICS-209, decision log - every document stamped DRAFT with a signature line |
-| C8 | HUD + vote column | Tiles processed and withheld, per-tile latency, model names with measured tokens per second, memory gauge, OpenShell policy state, scrollable audit records, and a "model recovered" versus "stub engaged" indicator. **Plus the vote column in the rank panel: 8 tally pips per row filling live, and a doubt bar** - this is Lightning's only visible moment, so it must read from the back of the room |
-| C9 | Demo kit | The 3-minute script, a pre-gated judge tile pool, the hostile-caption fixture tile, a `--demo-force-invalid-first-replan` flag (guarantees the self-recovery beat fires live), pre-seeded per-agency availability so the over-commitment flag fires on cue, a canned recording one keypress away, and a one-command reseed |
+| C1 | Map console + layer filters | MapLibre with pre-downloaded dark and satellite tiles; damage polygons; facility markers as a medical cross, never a blue dot; blocked roads red; flight box plus survey path. **The legend IS the filter**: every row is a toggle with a live count, off-rows dim so the operator sees what is suppressed, and three named presets switch whole layer sets, **Triage** (damage classes + facilities + blockages), **Dispatch** (destroyed + all agency routes + posts + flight box), **All**. No-damage is **off by default** because 490 green rectangles are noise. Collapse chevron, because an operator who has set their layers wants the map back |
+| C2 | Rank panel = the evidence card | Address labels from real data, not raw IDs. **Every term is plain English**: `hours since last look x resident vulnerability x AI uncertainty x road cut-off = priority`, with the wire-name mapping in section 7 so labels never drift from fields. SVI reads **"residents highly vulnerable, top 5% nationally (CDC SVI 0.95)"**, never a bare index. The ballot reads **"AI checked 8x: 6x destroyed, 2x major"** with an uncertainty bar, never raw pips. **One grade dropdown plus a Confirm button** (not separate Confirm and Flip buttons), labelled `Damage grade (AI said: destroyed)` so a first-time operator learns what a grade is from the control itself; same value confirmed is the pin, different value confirmed is the override, both logged by name. Titled as what it is: the audit trail behind a dispatch step |
+| C3 | Upload + stage tracker | The **Upload drone images** button and a per-image progress card. **Stage names follow the storage pivot**: `1 analyzing (outlines + grades)`, `2 indexing (join, doubt, caption)`, `3 storage decision (privacy gate)`, with live per-image counts. A person tile shows stages 1 and 2 complete and stage 3 as `withheld: analyzed, not stored`, which is the whole design in one line of UI |
+| C4 | Agency plan panel | Numbered routes per agency, one colour each, big legible numerals; **reassign first** (that is the demoed edit), then **reorder with up/down, remove, add**, with numerals renumbering instantly and every edit logged by operator name. Operator-entered availability with the Order column, plus the **Save then Re-draft** flow: save marks the numbers logged, a re-draft button then appears and the operator triggers it. **Print per agency AND a Print ALL** that emits every packet plus a cover sheet |
+| C5 | Flight plan panel | Show the proposed area and survey path, plus the export menu. **Waypoint drag/insert/delete and the draw-a-grid tool are stretch**: build them only after gates 1-8 are green, because nothing scores them. Appendix A's Member C prompt is corrected to match, so an AI pair does not burn Saturday on drag handles |
+| C6 | Archive panel | One search bar, thumbnail grid plus map pins, add-image (through the same ingest door so the gate runs on it), and caption/tag editing. Re-embed on save is stretch |
+| C7 | Aid package | One **Download aid package** button: FEMA PDA, ICS-213, ICS-209, ICS-213 RR per over-committed agency, decision log. Every document stamped DRAFT with a signature line |
+| C8 | HUD + uncertainty readout | Tiles processed and withheld-from-storage, per-tile latency, model names with measured tokens per second, memory gauge, **OpenShell policy state with all three verdict classes visible (localhost allow, approved-source allow, everything-else deny)**, scrollable audit records, dataset `last_refreshed` timestamps, and a "model recovered" versus "stub engaged" indicator. **Uncertainty needs a distribution readout, not only per-row bars**: a histogram or "12 of 50 buildings contested" summary, because if every row sits at the 0.05 floor the per-row bars look decorative and a judge will say so |
+| C9 | Demo kit | The 3-minute script, a judge tile pool that **deliberately includes a person tile** (the storage-denial beat is now live, not pre-gated away), the hostile-caption fixture tile, a `--demo-force-invalid-first-replan` flag (guarantees the self-recovery beat fires live), pre-seeded per-agency availability so the over-commitment flag fires on cue, a canned recording one keypress away, and a one-command reseed |
 
 ---
 
@@ -327,7 +338,7 @@ Copy these into every AI prompt. If a field is missing here, add it here first, 
 | Contract | Direction | Exact shape |
 |---|---|---|
 | Tile record | A to B | `{filename: str, bounds: [w,s,e,n], status: "processed" or "withheld" or "error", captured_at: float, latency_ms: int, buildings: [{id: str, class: 0-3, conf: 0.0-1.0}]}` |
-| Rank item | B to C | `{footprint_id: str, label: str, centroid: [lng,lat], damage_class: 0-3, confidence: float, confirmed: bool, graded_by: str, facility_near: {name: str, type: str, dist_m: int} or null, inputs: {staleness_h: float, vulnerable_density: float, doubt: float, road_cutoff: float or null}, priority: float, rationale: str, rationale_by: "nano" or "lightning"}` |
+| Rank item | B to C | `{footprint_id: str, label: str, centroid: [lng,lat], damage_class: 0-3, confidence: float, confirmed: bool, graded_by: str, facility_near: {name: str, type: str, dist_m: int} or null, inputs: {severity_weight: float, staleness_h: float, vulnerable_density: float, doubt: float, road_cutoff: float or null}, priority: float, rationale: str, rationale_by: "nano" or "lightning"}` |
 | Flight plan | B to C | GeoJSON FeatureCollection with two features: `properties.role = "survey-area"` (Polygon) and `properties.role = "survey-path"` (LineString with `altitude_m_agl`, `line_spacing_m`, `transects`, `est_flight_min`) |
 | Route | B to C | `{ok: bool, geometry: LineString, steps: [{text: str, dist_m: int}], distance_m: int, eta_min: float, crosses_blockage: bool, blocked_roads_avoided: [str], warning: str or null}` |
 | Status | all to C | `{tiles_processed: int, tiles_withheld: int, tile_latency_ms_p50: int, model_versions: {gate, damage, planner, lightning, captioner, embedder}, tokens_per_s: {nano: float, lightning: float}, memory_gb: float, last_replan_ms: int, recovery: "model" or "stub" or null, openshell: {policy: str, denials: int, audit: [{ts, actor, action, destination, verdict}]}}` |
@@ -348,9 +359,11 @@ Copy these into every AI prompt. If a field is missing here, add it here first, 
 - `captured_at` - epoch seconds, float.
 - **List ordering is B's job.** B returns the rank list already sorted: confirmed-severe first as a *sort tiebreaker*, then priority descending. Pinning never inflates `priority`, so gate 4's arithmetic still reconciles. C renders in the order received.
 
-**Where `doubt` comes from:** `doubt = max(0.05, 1 - vote_agreement)` from the Lightning ballot. Before Lightning is wired, use `1 - seg_confidence` so B1 is never blocked on B3.
+**Where `doubt` comes from:** `doubt = max(0.05, 1 - vote_agreement)` from the Lightning ballot. Before Lightning is wired, use `1 - grader_confidence` so B1 is never blocked on B3.
 
-**Reconciliation rule (gate 4 depends on it):** `priority == round(staleness_h,3) * round(vulnerable_density,3) * round(doubt,3) * (road_cutoff or 1)`, itself rounded to 5 decimals. Member C displays those same rounded factors, so a judge with a calculator always agrees.
+**Reconciliation rule (gate 4 depends on it):** `priority == round(severity_weight,3) * round(staleness_h,3) * round(vulnerable_density,3) * round(doubt,3) * (road_cutoff or 1)`, itself rounded to 5 decimals. `severity_weight` is `{0: 0.25, 1: 0.5, 2: 1.0, 3: 1.5}`. Member C displays those same rounded factors, so a judge with a calculator always agrees.
+
+**Display names, so the UI and the wire never drift.** C shows plain English; B sends these field names. `severity_weight` = "damage severity", `staleness_h` = "hours since last look", `vulnerable_density` = "resident vulnerability", `doubt` = "AI uncertainty", `road_cutoff` = "road cut-off", `priority` = "priority". Add a field here before using it in either place.
 
 ---
 
@@ -373,7 +386,7 @@ Seven techniques that earned their place on the design spike. Use them verbatim.
 | When | Member A | Member B | Member C |
 |---|---|---|---|
 | Fri, first hour | Rules check together, then contracts frozen (section 7) | - | - |
-| Fri evening | Download every weight, dataset and map tile - last internet! **Done ahead of schedule: all 7 model artifacts verified on the box (shard-counted, not just exit codes)** | All three vLLM servers up; **triple co-residency verified: Nano 0.25 + Lightning 0.35 + VL 0.22, ~98 GB, zero swap**; ballot 848 ms, tags 403 ms, caption 7.0 s measured; configure speculative decoding (DSpark drafter staged); capture baseline numbers | Repo scaffold, offline tile cache, static UI shell |
+| Fri evening | Download every weight, dataset and map tile - last internet! **Done: all 7 model artifacts verified on the box, shard-counted, not just exit codes** | All three vLLM servers up; **triple co-residency verified: Nano 0.25 + Lightning 0.35 + VL 0.22, ~98 GB, zero swap**; ballot 848 ms, tags 403 ms, caption 7.0 s, gate 89 ms measured; structured-output syntax for this build documented; DSpark drafter staged | **Not started.** Friday went to provisioning and measurement (B lane plus infrastructure); repo scaffold, offline tile cache and UI shell move to Saturday morning. The design mock and layer-filter behaviour are settled, so the build starts from a decided layout |
 | Sat morning | Streaming ingest + privacy gate + fixture test | Scorer + decision log + first Nano rationale | Map painting against a stub API |
 | Sat afternoon | Seg inference wired; data joins; **archive captions + embeddings** | Flight tasking with guided JSON; Lightning k=8 sweep; **agency plan builder** | Upload + stage tracker; **agency plan panel** |
 | Sat evening | Gate recall eval; geo fallback chain; caption + tag pipeline running | Routing with blocked roads; **archive search resolvers**; OpenShell policy + all beats | **Archive panel** and the aid package. Flight-path *display* only; Navigate and print |
@@ -386,7 +399,7 @@ Seven techniques that earned their place on the design spike. Use them verbatim.
 ### Cut list - drop in this order when behind
 
 1. Part four, the grounded assistant - cut it whole, it wins nothing on its own
-2. Semantic archive search and the caption VLM (keep location + structured filter, which need no model at all - gate 7's hard floor is written to survive exactly this cut)
+2. Semantic archive search (keep location + structured filter, which need no model at all - gate 7's hard floor is written to survive exactly this cut). **The VL model itself is never cut**: it is the primary damage grader, not just a captioner
 3. Manual waypoint editing and the draw-a-grid tool (keep the proposed path + export - no gate or beat touches manual editing)
 4. Archive caption re-embed on save (keep add-image and text edits)
 5. Agency step CRUD beyond reassign (reassign is the demoed edit)
@@ -407,7 +420,7 @@ Seven techniques that earned their place on the design spike. Use them verbatim.
 | Both models will not fit or contend for bandwidth | Measured Friday night with explicit utilization splits. If tight, Lightning stays (it is the bounty centrepiece) and Nano drops to 4-bit. We never discover this on Sunday. |
 | Replan blows its latency budget | Token cap plus prefill cap already sized; p95 measured with both models warm; narration covers any gap; a hard 10 s timeout fires the stub, and the HUD says which happened |
 | xView2 cls needs pre-disaster pairs and the AOI has none | Already the design, not a discovery: VL grading is the primary path; cls is the bonus witness where pre-event basemap chips exist. Verified in the ensemble code Friday, not on stage |
-| OpenShell blocks our own vLLM sockets | Policy allows localhost:8000 and :8001 explicitly, tested Friday. If it still fights us, run inference inside the sandbox too |
+| OpenShell blocks our own vLLM sockets | Policy allows localhost:8000, :8001 and :8002 explicitly, tested Friday. If it still fights us, run inference inside the sandbox too |
 | A judge does something unexpected in the UI | Everything visible is safe to click; one-command reseed; recorded backup a keypress away |
 | The new archive/agency scope crowds out the core | Cut list items 1-2 exist for exactly this: the assistant goes first, then semantic search. Location and structured search need no model and stay. Gates 1-8 are the line we defend |
 | The confident-wrong grade appears on stage | That is the scripted operator-override beat: "high confidence and wrong, which is exactly why a named human owns the final call." Flip it live, watch the tally update |
@@ -420,15 +433,15 @@ Run all nine Sunday afternoon. Any red light means we are not finished.
 
 | # | Gate |
 |---|---|
-| 1 | One command brings the whole system up with the network policy denying egress |
+| 1 | One command brings the whole system up with the policy live: localhost inference allowed, the five approved sources allowed GET-only, every other destination denied |
 | 2 | Ten tiles streamed in paint damage polygons on the map, each within seconds of arrival |
-| 3 | A fixture tile containing a person is withheld and appears in no UI or API surface except the authorized review endpoint |
+| 3 | A fixture tile containing a person **is analyzed and its buildings appear in the rank**, and that same tile appears in no archive listing, search result, thumbnail or API surface except the authorized review endpoint. Adding it through the archive's own button re-runs the gate and withholds it again |
 | 4 | Every rank row shows its formula inputs, the displayed product reconciles, and a grade flip updates the tally and pins confirmed severe damage to the top |
 | 5 | Blocking a road and replanning yields a new flight area plus a flyable survey path, and Navigate produces turn-by-turn that geometrically avoids the blocked road or warns loudly - printed on paper and legible at arm's length |
 | 6 | One **Download aid package** click yields a FEMA PDA that opens in a spreadsheet with one row per damaged building, plus ICS-213, ICS-209 and the decision log |
-| 7 | Archive search answers a location query and a structured filter, plus semantic tag search when it is built; a withheld image appears in none of them, and adding it through the archive's own button re-runs the gate and withholds it again |
+| 7 | Archive search answers a location query and a structured filter, plus semantic tag search when it is built; a person tile appears in none of them even though it contributed to the ranking, and adding it through the archive's own button re-runs the gate and withholds it again |
 | 8 | The plan is grouped by agency with unit counts, and an operator can add, reorder, edit, delete and reassign a step, with every edit in the log |
-| 9 | The eval numbers are published: gate recall, rationale faithfulness, FEMA field accuracy, Lightning-versus-Nano agreement, and the injection fixture result |
+| 9 | The eval numbers are published: gate recall through the tiled path, VL grading accuracy against hand labels, the doubt distribution, rationale faithfulness, FEMA field accuracy, Lightning-versus-grader agreement, search recall@k, and the injection fixture result |
 
 ---
 
@@ -436,13 +449,13 @@ Run all nine Sunday afternoon. Any red light means we are not finished.
 
 | Time | Beat | On screen |
 |---|---|---|
-| 0:00 | "~109 GB resident, six models warm, and the venue network is up. Watch: our own inference traffic flows to localhost, and the same agent's request to your server is refused. Policy, not an unplugged cable." | HUD: policy `deny-all-egress`, one allow and one deny side by side in the audit panel, memory gauge, both models warm |
-| 0:20 | Judge starts the downlink from the pre-gated pool | Tiles arrive live, polygons paint, per-tile latency ticks, withheld counter increments once: "the privacy gate held that tile back; it never reached a screen" |
+| 0:00 | "~98 GB resident, seven models warm, and the venue network is up. Watch three verdicts on one screen: our inference to localhost flows, the agent's dataset refresh from an approved source flows, and the same agent's request to your server is refused. Policy, not an unplugged cable." | HUD: policy state, one localhost allow, one approved-source allow and one deny side by side in the audit panel, memory gauge, all three servers warm |
+| 0:20 | Judge starts the downlink from the judge pool, which deliberately contains a person tile | Tiles arrive live, polygons paint, per-tile latency ticks: "every tile gets analyzed, including that one, because a person in frame is rescue signal. Watch where it does not go." |
 | 0:50 | **The plan is dispatch-shaped.** Fire 1-2-3, EMS 1-2, Police 1 on the map with unit counts. Judge reassigns a step to EMS; numerals and unit totals update, edit logged by name | Numbered routes per agency, over-commitment flagged red |
 | 1:00 | **Lightning's beat.** The uncertainty column fills in live: fifty rows, each showing 8 tally pips and a doubt bar, completing in one visible sweep | "The fast model just voted eight times on all fifty buildings - four hundred generations - in the time the reasoning model wrote one sentence. That column is what re-orders the list." Spec-decode before/after tokens per second on the HUD |
 | 1:35 | **"Both bridges on the arterial are out. Replan."** The demo flag forces the agent's first flight plan to come back schema-invalid, so this beat fires every time; the HUD flips to **model recovered** as it re-prompts itself with the validation error, the retry is guided-JSON constrained so it lands valid, then it streams its thinking trace and produces the plan. Navigate reroutes with printable directions | Route detours live, flight box jumps to the cut-off sector, replan p95 on the HUD, recovery indicator witnessed |
 | 2:15 | **Containment.** The poisoned caption fires. The agent calls its own fetch tool on an external address - denied. It tries to rewrite its egress rule - denied. It tries to read outside `./data` - denied. | Three audit lines print: `actor=agent`, action, destination, verdict, timestamp |
-| 2:30 | **Archive.** Judge types `buildings on fire` - thumbnails and map pins. Then they try to sneak it in: add the withheld image through the archive's own add button. The gate runs again and withholds it again. "One door, gate first. Search never had it, and you just watched it get refused." | Result grid plus pins; empty result for the withheld one |
+| 2:30 | **Archive.** Judge types `buildings on fire` and gets thumbnails plus map pins. Then the person tile: its buildings are visibly in the rank, and it appears in no search result, no grid, no thumbnail. They try to add it through the archive's own button; the gate runs again and refuses again. "It informed the plan. It was never stored. One storage door, and you just watched it hold." | Result grid plus pins; the person tile ranked but absent from every listing |
 | 2:40 | One click: **Download aid package** | FEMA PDA, ICS-213, ICS-209 and the log, each stamped DRAFT with a signature line |
 | 2:50 | Close | "One box. No cloud. The county owns it. The same policy that stops a hijacked agent is what makes this thing work when the network is gone." |
 
@@ -463,42 +476,53 @@ system that runs on one NVIDIA DGX Spark with no internet access.
 Build ONE module at a time. Right now: <module name>.
 
 Non-negotiables:
-1. The privacy gate runs BEFORE any other component reads a tile. If the person
-   detector errors or is uncertain, the tile is withheld. Withheld tiles are
-   reachable only from an authorized review endpoint.
-2. Emit exactly this Tile record shape: <paste contract>
-3. Damage classes are integers 0-3 (0 no-damage, 1 minor, 2 major, 3 destroyed).
-4. Coordinates are [lng, lat]; bounds are [w, s, e, n].
-5. No network calls to anything except localhost.
-6. The archive indexer writes ONLY images that passed the privacy gate. Enforce it
-   in the writer itself, so a withheld image is unreachable from search by
-   construction, not by a query-time filter.
-7. Geo extraction order is GeoTIFF transform, then EXIF GPS, then sidecar file,
+1. Every tile is analyzed: outlines, grade, caption, join, rank. A person in frame
+   is rescue signal, never a reason to discard data.
+2. The privacy gate runs before the ARCHIVE WRITER, not before analysis. Person
+   signal, or any detector error, withholds the image from storage: never indexed,
+   never searchable, never thumbnailed, reachable only from an authorized review
+   endpoint. Enforce it inside the writer so the add-image and edit paths inherit it.
+3. Emit exactly this Tile record shape: <paste contract>
+4. Damage classes are integers 0-3 (0 no-damage, 1 minor, 2 major, 3 destroyed).
+5. Coordinates are [lng, lat]; bounds are [w, s, e, n].
+6. No network calls except localhost and the named-dataset allowlist, and only
+   ever through the librarian by dataset NAME, never by URL.
+7. The archive indexer writes ONLY images that passed the privacy gate. Enforce it
+   in the writer itself, so a person image is unstorable by construction, not by a
+   query-time filter.
+8. Geo extraction order is GeoTIFF transform, then EXIF GPS, then sidecar file,
    then flag needs_geo. Never drop an image for missing location.
+9. The gate uses tiled inference on full-resolution imagery: a person downscaled
+   to 640 px is about 5 px tall and will be missed.
 
-Deliver the module plus a runnable test proving non-negotiables 1 and 6. Use pytest,
-no new frameworks, no scaffolding for later.
+Deliver the module plus a runnable test proving non-negotiables 1, 2 and 7: the
+person tile MUST contribute buildings to the rank AND MUST be absent from every
+archive and search surface. Use pytest, no new frameworks, no scaffolding for later.
 ```
 
 ### Member B
 
 ```
 You are building the decision layer of FIRST LIGHT, an offline disaster-triage
-system on one NVIDIA DGX Spark. Two local vLLM servers are available:
-Nemotron Nano 9B v2 on :8000 and Nemotron 3.5 Lightning on :8001.
+system on one NVIDIA DGX Spark. Three local vLLM servers are available:
+Nemotron Nano 9B v2 on :8000, Nemotron 3.5 Lightning on :8001 (text-only),
+and Nemotron Nano 12B v2 VL on :8002 (the only one that sees images).
 
 Build ONE module at a time. Right now: <module name>.
 
 Non-negotiables:
-1. priority = staleness_h x vulnerable_density x doubt x (road_cutoff or 1).
-   Round each factor to 3 decimals BEFORE multiplying so the on-screen product
-   reconciles exactly. Property value never enters the formula.
+1. priority = severity_weight x staleness_h x vulnerable_density x doubt x
+   (road_cutoff or 1), where severity_weight is {0: 0.25, 1: 0.5, 2: 1.0, 3: 1.5}
+   by damage class. Round each factor to 3 decimals BEFORE multiplying so the
+   on-screen product reconciles exactly. Property value never enters the formula.
 2. The decision log is append-only, enforced by SQL triggers, not by convention.
 3. Every model call has a hard timeout and a deterministic fallback with an
    identical signature. Label which one ran in the response.
 4. Consume/emit exactly these contracts: <paste contracts>
 5. When the model returns schema-invalid JSON, re-prompt ONCE with the validation
-   error before falling back.
+   error before falling back. On this vLLM build, top-level guided_json is silently
+   ignored: use response_format {type: json_schema} for objects and guided_choice
+   for enumerated picks. Both are verified working on this box.
 6. Archive search runs three resolvers behind ONE endpoint: location (geocode
    against the local OSM tables), semantic (cosine over caption embeddings in
    NumPy), structured filter (SQL). No vector database, no external service.
@@ -533,8 +557,9 @@ Non-negotiables:
 7. Agency routes use large legible numerals, one colour per agency, and every
    step is add / reorder / edit / delete / reassign with the numerals renumbering
    instantly.
-8. The flight path is editable in place: drag a waypoint, click the line to
-   insert one, click a point to delete, draw a box to generate a grid.
+8. The flight path panel shows the proposed area and survey path plus the export
+   menu. In-place waypoint editing and the draw-a-grid tool are STRETCH: do not
+   build them until every other panel is green, because no gate or beat scores them.
 
 Deliver the panel and tell me exactly which API fields it reads.
 ```
