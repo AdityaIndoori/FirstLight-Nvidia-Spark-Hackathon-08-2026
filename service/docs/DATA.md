@@ -26,12 +26,12 @@ cd ~/fl/service
 #    z12-16 first, because that is a legible map in 3 MB and 2.5 minutes.
 ./.venv/bin/python scripts/fetch_tiles.py --aoi pinellas --zoom 12-16
 
-# 3. County GIS. See section 3: the script as committed fetches the WRONG
-#    COUNTY. Read that section before running it.
+# 3. County GIS. Refuses to write an empty file and exits non-zero on failure,
+#    so a silent wrong-county fetch cannot happen again. See section 3.
 ./.venv/bin/python scripts/fetch_aoi.py
 
 # 4. Deep zoom, only if there is time and bandwidth left. z17-18 is where a
-#    crew can see roofs and driveways, and it is 90% of the tile count.
+#    crew can see roofs and driveways, and it is 93% of the tile count.
 ./.venv/bin/python scripts/fetch_tiles.py --aoi pinellas --zoom 17-18 --yes
 ```
 
@@ -317,22 +317,21 @@ test set.
 
 Writes `data/datasets/{footprints,parcels,roads,svi}.geojson` and
 `facilities.csv`. Owner-name columns are dropped in the loader, at ingest,
-before anything downstream can read them; `DROP_COLUMNS` is per-schema because
-the field names differ per county and a tuple written for one will not catch
-another.
+before anything downstream can read them. Scrubbing is substring-based, not an
+exact-match list, because the field names differ per county and a tuple written
+for one county silently passes another county's owner fields straight through.
+Each dataset records the columns it actually dropped, so the write-up quotes a
+measured number.
 
-### KNOWN BAD as committed: it fetches the wrong county
+### The bug this runbook caught, and what it cost
 
-Measured on the box on 2026-08-16. The script ran to completion and produced
+Worth keeping, because it is the reason the checks below exist. As originally
+committed the script hardcoded King County layers,
+`services.arcgis.com/.../Building_Outlines_2023` and
+`gismaps.kingcounty.gov/.../KingCo_Parcels`, while the AOI had moved to
+Pinellas County, Florida. It ran to completion and wrote
 `footprints.geojson` and `parcels.geojson` of **45 bytes each**, literally
-`{"type":"FeatureCollection","features":[]}`.
-
-The cause is not a dead endpoint. The script hardcodes King County layers:
-
-- `SEATTLE_FOOTPRINTS` = `services.arcgis.com/ZOyb2t4B0UYuYNYH/.../Building_Outlines_2023`
-- `KC_PARCELS` = `gismaps.kingcounty.gov/.../KingCo_Parcels`
-
-...and the AOI is now Pinellas County, Florida. Counted live with
+`{"type":"FeatureCollection","features":[]}`. Counted live with
 `returnCountOnly`:
 
 | Query | Count |
@@ -341,11 +340,29 @@ The cause is not a dead endpoint. The script hardcodes King County layers:
 | Seattle footprints against the **Seattle** bbox | 27,250 |
 | King County parcels against the **Pinellas** bbox | **0** |
 
-The endpoints are alive; the geography is wrong. West Seattle was retired in
-favour of the real Milton and Michael AOIs, and this script was not moved with
-it.
+The endpoints were alive; the geography was wrong. An empty FeatureCollection
+reads downstream as "this county publishes none" rather than "the fetch
+failed", which is the kind of silence that ends up in a FEMA export.
 
-### The Pinellas replacements, counted live against the Pinellas bbox
+**Now fixed.** Sources are a per-AOI table keyed by `AOI_NAME`, the script
+probes `returnCountOnly` BEFORE paging and refuses to page when a
+should-be-populated layer returns zero, it never writes an empty file, it exits
+non-zero listing failures, and an unregistered AOI is a hard error naming the
+registered ones instead of querying another county with this bbox.
+
+A second and worse defect surfaced with it: `DROP_COLUMNS` was an exact-match
+list written for King County, so against Pinellas it silently passed `OWNER1`,
+`OWNER2`, `MAILTO`, `OWNADD_1`, `OWNADD_2`, `OWNCITY`, `OWNSTATE`,
+`OWNCOUNTRY` and `OWNZIP` straight through into the loaded properties.
+Scrubbing is now substring-based (`own`, `taxpay`, `mail`, `grantee`,
+`grantor`, `deed`) and each dataset records the columns actually dropped: 9 for
+parcels, 7 for facilities.
+
+**Measured after the fix:** parcels **39,166** written with `SITE_ADDRESS`
+present, facilities **36**, road closures **0** (expected, see below), zero
+owner fields surviving, 36 useful fields kept.
+
+### The Pinellas sources, each counted live against the Pinellas bbox
 
 | What | Endpoint | Count |
 |---|---|---|
@@ -370,14 +387,16 @@ Three traps in that table:
    Sarasota's footprint layer returns 0 against the Pinellas bbox: it is a
    different county, not a fallback.
 3. **The gray-sky closure service is up and empty.** All 12 layers answer and
-   all return 0 features. That is correct: it is a live during-the-event feed
-   and there is no storm today. B4 will not get real blocked roads from it, so
-   the operator-entered `road_block` path is the only source that will have
-   data on stage. `data/datasets/roads.geojson` is currently the 926-byte,
-   5-feature fixture, and nothing in `fetch_aoi.py` as written will replace it.
+   all return 0 features. That is correct and is now recorded in the source
+   table as `expect=0`: it is a live during-the-event feed and there is no storm
+   today. B4 will not get real blocked roads from it, so the operator-entered
+   `road_block` path is the only source that will have data on stage.
 
-Until `fetch_aoi.py` is repointed, treat every county-GIS-derived number as
-fixture-based and say so out loud rather than publishing it.
+**Roads are still a gap, and it is nobody's current lane.**
+`data/datasets/roads.geojson` remains the 926-byte, 5-feature fixture. Real
+road geometry for this AOI needs an OSM extract, which no script here fetches.
+Any routing number measured today is measured against a 5-edge fixture graph and
+must say so.
 
 ---
 
@@ -426,7 +445,7 @@ Nothing here crashes the system. Each gap costs one named, visible thing.
 | `data/gate_eval` | **A5's published gate-recall number, and gate 9.** The privacy claim's residual becomes unbounded, and the README cannot say what the recall is. The gate itself still runs and still withholds | No recall figure to publish. Do not substitute a synthetic one |
 | County footprints | Building identity and street addresses in the rank panel. The rank still ranks, but rows read as raw IDs instead of addresses | Rank rows without real address labels |
 | County parcels | The `SITE_ADDRESS` join, and the property-value columns the pitch promises to load and then visibly refuse to use | Same as above |
-| `roads.geojson` (real) | B4's offline routing has a 5-edge fixture graph, so routes cannot follow real turns. This is the one claim that feature exists to make | Routes drawn as dashed approximate connectors rather than solid routed lines |
+| `roads.geojson` (real) | B4's offline routing falls back to a 5-edge fixture graph, so routes cannot follow real turns, which is the one claim that feature exists to make. **This is the current state**, see section 3 | Routes drawn as dashed approximate connectors rather than solid routed lines |
 | Gray-sky closures | Real blocked roads. Operator-entered closures still work and are still banned by name and geometry | No pre-populated closures |
 | `cdc_svi` | `vulnerable_density` falls back to a default, so the vulnerability term stops discriminating between block groups | SVI reads as a default rather than "top 5% nationally" |
 | `cms_facilities` | `facility_near`, so EMS assignment loses its strongest signal and the medical-cross markers vanish | No facility proximity in the evidence card |
@@ -440,11 +459,12 @@ Nothing here crashes the system. Each gap costs one named, visible thing.
 | What | Size | Note |
 |---|---|---|
 | `web/tiles` Pinellas z12-16 | 3.0 MB measured | the practical minimum |
-| `web/tiles` Pinellas z12-18 | ~21 MB | full demo cache |
-| `web/tiles/sat` Pinellas z12-15 | 13.8 MB measured | opt-in |
+| `web/tiles` Pinellas z12-18 | 14.8 MB measured | full demo cache, 4,731 tiles |
+| `web/tiles/sat` Pinellas z12-15 | 13.8 MB measured | opt-in, 110 tiles |
 | `data/gate_eval/tiles` | 16 MB measured (15,835,211 bytes) | 100 frames |
-| VisDrone source zips | 375 MB | deleted after assembly unless `--keep-cache` |
-| `data/datasets` | 28 KB currently, ~20 MB when the county GIS actually lands | see section 3 |
+| VisDrone source zips | 375 MB (392,890,638 bytes measured) | deleted after assembly unless `--keep-cache` |
+| `data/datasets` | 28 KB before the GIS fix, a few MB with 39,166 parcels loaded | see section 3 |
 
-Budget about **440 MB of transfer** and **51 MB kept** for a full provisioning
-run with satellite, or **~400 MB transfer and 37 MB kept** without.
+Budget about **440 MB of transfer** and **45 MB kept** for a full provisioning
+run with satellite, or **~400 MB transfer and 31 MB kept** without. The eval
+set dominates the transfer and the tiles dominate the wall clock.
