@@ -33,9 +33,20 @@ def score(path: Path) -> tuple[float, float]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", default="data/noaa_z18")
+    # noaa_frames holds 4x4 MOSAICS (1024 px, ~525 m across). noaa_z18 holds the raw
+    # 256 px map tiles they were built from, which is 16x less ground per frame: a
+    # building crop out of one is a few dozen pixels, and the privacy gate's 1280 px
+    # tiled sweep degenerates to a single downscaled pass. Grading is only meaningful
+    # on the mosaics, so those are the default.
+    ap.add_argument("--src", default="data/noaa_frames")
     ap.add_argument("--out", default="/tmp/firstlight_test_images")
     ap.add_argument("--n", type=int, default=6)
+    ap.add_argument(
+        "--min-px",
+        type=int,
+        default=512,
+        help="refuse frames smaller than this; guards against picking raw map tiles",
+    )
     args = ap.parse_args()
 
     src = Path(args.src)
@@ -48,13 +59,31 @@ def main() -> int:
         return 1
 
     scored = []
+    skipped_small = 0
     for p in tiles:
         try:
+            from PIL import Image
+
+            with Image.open(p) as probe:
+                if min(probe.size) < args.min_px:
+                    skipped_small += 1
+                    continue
             energy, luma = score(p)
         except Exception:
             continue
         scored.append((energy, luma, p))
     scored.sort()
+
+    if skipped_small:
+        print(f"skipped {skipped_small} frame(s) under {args.min_px} px", file=sys.stderr)
+    if not scored:
+        print(
+            f"no frames of at least {args.min_px} px in {src}. Raw map tiles are 256 px; "
+            f"mosaic them first with scripts/fetch_noaa_aerials.py --span 4, or point "
+            f"--src at data/noaa_frames.",
+            file=sys.stderr,
+        )
+        return 1
 
     # Spread across the texture range: low energy is intact roofs and open ground,
     # high energy is debris fields and broken roofs.

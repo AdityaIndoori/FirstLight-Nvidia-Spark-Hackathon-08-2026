@@ -88,6 +88,14 @@ upload. Tests: `cd service && python -m pytest tests/ -q` (318 pass).
 
 ## Architecture
 
+![FIRST LIGHT system architecture](docs/architecture.png)
+
+*Full-size source: [`docs/architecture.html`](docs/architecture.html) — self-contained
+SVG, renders offline, no external assets. Regenerate the PNG by opening it and taking
+a full-page screenshot at 1800×1200.*
+
+The same pipeline as text, for anyone reading this in a terminal:
+
 ```
   drone downlink                        ONE BOX, NETWORK UNPLUGGED
   ┌──────────────┐
