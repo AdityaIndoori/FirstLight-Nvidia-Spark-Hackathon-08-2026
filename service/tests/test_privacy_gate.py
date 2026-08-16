@@ -406,3 +406,58 @@ def test_is_person_class_tolerates_junk():
     assert privacy_gate.is_person_class({"cls": VEHICLE}) is False
     assert privacy_gate.is_person_class({}) is False
     assert privacy_gate.is_person_class({"cls": "pedestrian"}) is False
+
+
+def test_concurrent_checks_never_share_the_model_mid_inference(tmp_path, monkeypatch):
+    """Two uploads at once must not corrupt the detector.
+
+    Ultralytics mutates the model during predict() - it fuses layers on the first
+    pass - so an unsynchronised handle raced. Measured on the box: six concurrent
+    uploads raised "'Conv' object has no attribute 'bn'" on two tiles, and because
+    the gate fails CLOSED those two were withheld as detector errors. Working
+    imagery silently became unstorable, which is the worst shape this bug could
+    take: it looks like the privacy gate doing its job.
+
+    The fake detector below asserts the invariant directly - it fails if a second
+    caller is inside predict() while the first is still there.
+    """
+    inside = 0
+    overlapped = False
+    guard = threading.Lock()
+
+    def fake_detect(image, conf):
+        nonlocal inside, overlapped
+        with guard:
+            inside += 1
+            if inside > 1:
+                overlapped = True
+        try:
+            time.sleep(0.02)
+            return []
+        finally:
+            with guard:
+                inside -= 1
+
+    monkeypatch.setattr(privacy_gate, "_detect", fake_detect)
+    path = _img(tmp_path, "race.jpg")
+
+    errors: list[str] = []
+
+    def run():
+        try:
+            verdict = privacy_gate.check(path)
+            # A clean image must clear. A detector error here would mean the gate
+            # turned a storable tile into a withheld one under nothing but load.
+            if not verdict.store_ok:
+                errors.append(verdict.withheld_reason or "refused")
+        except Exception as exc:  # noqa: BLE001 - the point is that this cannot happen
+            errors.append(f"{type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=run) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, f"concurrent gate checks failed: {errors}"
+    assert not overlapped, "two threads were inside the detector at once"

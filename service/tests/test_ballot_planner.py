@@ -1357,3 +1357,28 @@ def test_an_unknown_agency_is_refused_rather_than_stored(store):
         scorer.set_plan_override("fp_1", operator="R. Alvarez", agency="coastguard")
     with pytest.raises(ValueError):
         scorer.set_plan_override("fp_1", operator="   ", agency="ems")
+
+
+def test_tied_priorities_keep_a_stable_order_across_reranks(store):
+    """Equal inputs tie, and the tie must not reshuffle between polls.
+
+    Three buildings on one street with the same class, staleness and doubt produce
+    the same priority - that is the formula being deterministic, not a bug. But the
+    sort key was (confirmed-severe, -priority) with no final tiebreak, so the order
+    among tied rows came from whatever sequence SQLite returned. An operator reading
+    "second on the list" and looking again after a re-rank could see a different
+    building there.
+    """
+    for fid in ("fp_c", "fp_a", "fp_b"):
+        add_building(fid, cls=2, conf=0.75, centroid=[-85.67, 30.17], last_seen_at=1.0)
+
+    first = [it["footprint_id"] for it in scorer.rank(limit=10)["items"]]
+    assert len(first) == 3
+
+    # Tied on every input, so the tiebreak is the only thing ordering them.
+    priorities = {round(it["priority"], 6) for it in scorer.rank(limit=10)["items"]}
+    assert len(priorities) == 1, f"expected a genuine tie, got {priorities}"
+
+    for _ in range(3):
+        again = [it["footprint_id"] for it in scorer.rank(limit=10)["items"]]
+        assert again == first, f"tied rows reshuffled: {first} then {again}"

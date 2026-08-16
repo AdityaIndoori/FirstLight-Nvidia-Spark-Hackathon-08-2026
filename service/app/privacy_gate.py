@@ -143,6 +143,15 @@ class GateVerdict:
 # whose real constraint is bandwidth, not capacity.
 _model: Any = None
 _model_lock = threading.Lock()
+# Held across one image's whole tiled sweep. WHY: ultralytics mutates the model
+# during predict() - it fuses layers on the first pass - so two threads on one
+# handle race. Measured, not theorised: six concurrent uploads raised
+# "'Conv' object has no attribute 'bn'" on two tiles, and because the gate fails
+# CLOSED those two were withheld as detector errors. Working imagery silently
+# becoming unstorable is the worst shape this bug could take, because it looks
+# exactly like the privacy gate doing its job. The gate is milliseconds beside the
+# VL grading it precedes, so serialising it costs nothing worth having.
+_infer_lock = threading.Lock()
 _load_error: Optional[str] = None
 _load_done = False
 
@@ -252,7 +261,12 @@ def _class_name(names: Any, cid: int) -> str:
 def _detect(image: Image.Image, conf: float) -> list[dict]:
     """One detector pass over one image or crop. Boxes come back in the
     coordinates of what was passed in; `check()` translates them. This is the
-    single seam tests monkeypatch, so nothing else may talk to the model."""
+    single seam tests monkeypatch, so nothing else may talk to the model.
+
+    NOT internally locked: `check()` holds _infer_lock across the whole tiled
+    sweep, so one image's crops share a single exclusive turn on the model rather
+    than contending crop by crop.
+    """
     model = _ensure_model()
     # PIL in, not numpy: ultralytics reads numpy arrays as BGR, and a silent
     # channel swap in the one model that guards privacy is not a risk worth
@@ -380,24 +394,28 @@ def check(
         boxes = _crop_boxes(img.width, img.height, tiled)
         tiling_used = len(boxes) > 1
         whole = (0, 0, img.width, img.height)
-        for box in boxes:
-            crop = img if box == whole else img.crop(box)
-            try:
-                found = _detect(crop, threshold)
-            finally:
-                if crop is not img:
-                    crop.close()
-            ox, oy = box[0], box[1]
-            for d in found:
-                x1, y1, x2, y2 = d["bbox"]
-                d["bbox"] = [
-                    round(x1 + ox, 1),
-                    round(y1 + oy, 1),
-                    round(x2 + ox, 1),
-                    round(y2 + oy, 1),
-                ]
-                dets.append(d)
-            scanned += 1
+        # One exclusive turn on the model per image, covering every crop of the
+        # tiled sweep: the alternative is contending for it crop by crop, which
+        # costs more lock traffic for no extra safety.
+        with _infer_lock:
+            for box in boxes:
+                crop = img if box == whole else img.crop(box)
+                try:
+                    found = _detect(crop, threshold)
+                finally:
+                    if crop is not img:
+                        crop.close()
+                ox, oy = box[0], box[1]
+                for d in found:
+                    x1, y1, x2, y2 = d["bbox"]
+                    d["bbox"] = [
+                        round(x1 + ox, 1),
+                        round(y1 + oy, 1),
+                        round(x2 + ox, 1),
+                        round(y2 + oy, 1),
+                    ]
+                    dets.append(d)
+                scanned += 1
     except Exception as exc:
         # Scrub with the source name in hand. The regex catches paths in general,
         # but a filename with spaces in it needs the exact string, and we have it

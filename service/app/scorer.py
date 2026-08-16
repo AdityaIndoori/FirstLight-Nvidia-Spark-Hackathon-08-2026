@@ -134,6 +134,13 @@ def rank(limit: int = 50) -> dict:
         key=lambda it: (
             not (it.confirmed and it.damage_class >= contracts.SEVERE_FROM),
             -it.priority,
+            # Deterministic tiebreak. Equal inputs give equal priorities - three
+            # buildings on one street with the same class, staleness and doubt
+            # legitimately tie - and without this the order among them came from
+            # whatever sequence SQLite happened to return, so a re-rank could
+            # reshuffle rows an operator had just read. footprint_id is stable for
+            # the life of the building.
+            it.footprint_id,
         )
     )
     top = items[:limit]
