@@ -1,0 +1,10 @@
+[project]
+name = "first-light"
+version = "0.1.0"
+dependencies = [
+    "shapely",
+    "scipy",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
