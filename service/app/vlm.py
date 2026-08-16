@@ -6,10 +6,16 @@ be pointed at a hostname by a hostile caption is a dependency we do not want.
 The opener below is built with an empty ProxyHandler so an inherited proxy
 environment variable can never redirect a "localhost" call off the box.
 
-WHY the odd structured-output dance: verified on this build (README section 4),
-a top-level `guided_json` parameter is SILENTLY IGNORED. Pass objects as
+WHY the odd structured-output dance: measured on the box, twice, because getting
+this wrong is silent. Two parameters are accepted and then IGNORED rather than
+rejected, so a wrong guess looks like a model that cannot follow instructions:
+a top-level `guided_json`, and `guided_choice` on vLLM 0.25 which renamed it.
+What actually constrains on this build (0.25.1): objects via
 `response_format={"type": "json_schema", "json_schema": {"name": n, "schema": s}}`
-and enumerated picks as `guided_choice=[...]`. Never use `guided_json`.
+and enumerated picks via `structured_outputs={"choice": [...]}`. We send
+`guided_choice` alongside it so an older build still works. Evidence: with
+guided_choice alone Lightning returned "Here's a thinking" and finish_reason
+"length"; with structured_outputs it returned "3" and finish_reason "stop".
 
 WHY every call returns a `how` label: A3 and technique 6 of the plan. A wedged
 endpoint must degrade to a deterministic labelled fallback with an identical
@@ -268,7 +274,16 @@ def chat(
             "json_schema": {"name": schema_name, "schema": schema},
         }
     if choice is not None:
-        payload["guided_choice"] = [str(c) for c in choice]
+        # Enumerated picks need BOTH keys. vLLM renamed this in 0.25: the older
+        # `guided_choice` is accepted and then SILENTLY IGNORED, which does not
+        # error, it just returns prose and every ballot falls through to the
+        # stub. Measured on this box (vLLM 0.25.1): guided_choice returned
+        # "Here's a thinking" with finish_reason "length", structured_outputs
+        # returned "3" with finish_reason "stop". Sending both keeps this
+        # working across builds either way.
+        picks = [str(c) for c in choice]
+        payload["guided_choice"] = picks
+        payload["structured_outputs"] = {"choice": picks}
 
     try:
         data = _post(f"{endpoint.url}/chat/completions", payload, deadline)

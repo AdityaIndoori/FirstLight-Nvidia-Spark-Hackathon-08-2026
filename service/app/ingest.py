@@ -512,6 +512,48 @@ def _analyze(p: Path, source: str, t0: float) -> contracts.TileRecord:
         needs_geo=bool(result.needs_geo),
     )
 
+    # ---- B3 ballot (BallotLightning) ----------------------------------------
+    # The ballot runs after the join, so the vote sees the facility and area
+    # context, and before the storage decision, so a tile that will be WITHHELD
+    # still contributes its doubt: analysis is not what the gate guards.
+    #
+    # Bounded twice, because the plan's per-tile budget is 10 s and VL grading
+    # has already spent most of it. When more buildings arrived than the budget
+    # can vote on, the least certain go first (caption contradicting the grade,
+    # then rising grader confidence) and the rest keep their grader-confidence
+    # doubt. Which of the two happened is recorded, never inferred.
+    #
+    # A ballot failure is not a tile failure: `stages` is untouched on the happy
+    # path and the tile keeps every grade it earned either way.
+    if graded:
+        try:
+            from . import ballot
+
+            cap = ballot.tile_max_buildings()
+            results = ballot.vote_batch(
+                graded,
+                budget_s=ballot.tile_budget_s(),
+                uncertain_only=cap if len(graded) > cap else None,
+            )
+            ballot.persist_all(results)
+            spread = ballot.spread_check(results)
+            rec.ballot = {
+                "voted": spread["total"],
+                "of_buildings": len(graded),
+                "selection": ballot.last_sweep()["selection"],
+                "model": spread["model"],
+                "stub": spread["stub"],
+                "at_floor": spread["at_floor"],
+                "contested": spread["contested"],
+                "mean_doubt": spread["mean_doubt"],
+                "ms": ballot.last_sweep()["wall_ms"],
+            }
+            db.log("ballot", "tile-ballot", rec.ballot)
+        except Exception as exc:  # noqa: BLE001 - no ballot is a missing column, not a lost tile
+            rec.ballot = {"error": f"{type(exc).__name__}: {exc}"[:160]}
+            db.log("ballot", "tile-ballot-failed", {"error": rec.ballot["error"]})
+    # ---- end B3 ballot -------------------------------------------------------
+
     # ---- stage: store. The gate runs inside try_store. Fail CLOSED: if the
     # writer itself breaks we withhold, because "stored" must never be the
     # outcome of an unproven check.

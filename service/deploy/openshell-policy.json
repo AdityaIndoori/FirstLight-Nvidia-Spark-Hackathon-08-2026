@@ -1,0 +1,142 @@
+{
+  "schema": "firstlight/openshell-policy/1",
+  "version": 1,
+  "name": "firstlight-eoc",
+  "description": "FIRST LIGHT egress and filesystem policy. Egress is an ALLOWLIST, not a blanket deny: localhost inference flows, five named dataset sources flow GET-only, every other destination is refused. The venue network stays plugged in, so what the judge watches is policy discriminating by destination rather than a cable being out.",
+  "default_effect": "deny",
+  "default_reason": "no rule allows this destination. Egress is an allowlist and this destination is not on it.",
+  "precedence": "Rules are evaluated in file order and the first match wins. Every deny rule is listed before every allow rule, so no later allow can widen an earlier deny. A test asserts that ordering, because a careless edit that moved one allow upward would silently invert the whole policy.",
+  "runtime": {
+    "target": "NVIDIA OpenShell 0.0.85 under NemoClaw 0.0.90, docker driver",
+    "verified_on": "DGX Spark gn100-2714, sandbox my-assistant",
+    "enforcement_point": "OpenShell supervisor network layer, OPA engine, outside the caged process",
+    "audit_stream": "openshell logs <sandbox> --source all, OCSF records",
+    "note": "This file is the policy our own enforcement layer reads and the document read aloud on stage, because the runtime schema forbids a description field inside a rule. app/containment.py emits the runtime-shaped preset from these same rules via runtime_preset(), so the two never drift.",
+    "preset_binaries": [
+      "/usr/bin/python3",
+      "/usr/local/bin/python3",
+      "/usr/bin/curl",
+      "/usr/local/bin/openclaw",
+      "/usr/local/bin/node",
+      "/usr/bin/node"
+    ]
+  },
+  "actions": {
+    "inference": {"kind": "network", "method": "POST", "description": "A chat completion against a local vLLM server."},
+    "dataset-refresh": {"kind": "network", "method": "GET", "description": "The librarian fetching one approved dataset by name."},
+    "fetch": {"kind": "network", "method": "GET", "description": "A generic outbound GET. The agent has no tool that produces one, so this action only ever appears when something is trying to invent a fetch primitive."},
+    "GET": {"kind": "network", "method": "GET", "description": "A raw outbound GET."},
+    "POST": {"kind": "network", "method": "POST", "description": "A raw outbound POST. Never allowed to a dataset source: the allowlist is read-only."},
+    "PUT": {"kind": "network", "method": "PUT", "description": "A raw outbound PUT."},
+    "DELETE": {"kind": "network", "method": "DELETE", "description": "A raw outbound DELETE."},
+    "fs-read": {"kind": "filesystem", "method": "READ", "description": "Reading a file."},
+    "fs-write": {"kind": "filesystem", "method": "WRITE", "description": "Writing a file."},
+    "policy-write": {"kind": "policy", "method": "WRITE", "description": "An attempt to edit the file that defines the cage."}
+  },
+  "rules": [
+    {
+      "id": "deny-policy-write",
+      "effect": "deny",
+      "verdict_class": "deny",
+      "kind": "policy",
+      "description": "The file that defines the cage cannot be edited by the caged process. This rule is first on purpose: no allow below it can reach a policy mutation. Enforcement lives outside the process, so a hijacked agent cannot unhook it, and this rule is the in-process half saying the same thing."
+    },
+    {
+      "id": "deny-policy-file-write",
+      "effect": "deny",
+      "verdict_class": "deny",
+      "kind": "filesystem",
+      "methods": ["WRITE"],
+      "path_contains": ["openshell-policy.json", "nemoclaw-agent.json", "openclaw-sandbox.yaml", "openclaw.json"],
+      "description": "The same refusal reached by the other door. A write aimed at a policy or agent definition is a policy mutation whatever the caller chooses to call it."
+    },
+    {
+      "id": "deny-egress-to-model-hosts-by-post",
+      "effect": "deny",
+      "verdict_class": "deny",
+      "kind": "network",
+      "methods": ["POST", "PUT", "DELETE", "PATCH"],
+      "hosts": ["storms.ngs.noaa.gov", "xview2.org", "github.com", "data.cms.gov", "www.atsdr.cdc.gov"],
+      "description": "The five approved sources are read-only. A POST to an approved host is the shape an exfiltration takes when the attacker has read the allowlist: the destination looks legitimate and the direction of the data is what is wrong. Denied by method, before the GET allow below can be reached."
+    },
+    {
+      "id": "allow-localhost-inference",
+      "effect": "allow",
+      "verdict_class": "localhost-allow",
+      "kind": "network",
+      "hosts": ["127.0.0.1", "localhost", "::1", "host.openshell.internal"],
+      "ports": [8000, 8001, 8002],
+      "methods": ["GET", "POST"],
+      "description": "Our three local vLLM servers: Nemotron Nano 9B v2 on 8000, Nemotron 3.5 Lightning on 8001, Nemotron Nano 12B v2 VL on 8002. This is the positive control. Tokens stream while an external address is refused on the same screen, which is how the judge knows the network is up and the denial is policy rather than an unplugged cable."
+    },
+    {
+      "id": "allow-noaa-storm-imagery",
+      "effect": "allow",
+      "verdict_class": "approved-source-allow",
+      "kind": "network",
+      "hosts": ["storms.ngs.noaa.gov"],
+      "ports": [443],
+      "methods": ["GET"],
+      "dataset": "noaa_storm_imagery",
+      "description": "NOAA emergency response imagery, the post-event tile source. GET only, asked for by the name noaa_storm_imagery and never by URL."
+    },
+    {
+      "id": "allow-xview2-labels",
+      "effect": "allow",
+      "verdict_class": "approved-source-allow",
+      "kind": "network",
+      "hosts": ["xview2.org"],
+      "ports": [443],
+      "methods": ["GET"],
+      "dataset": "xview2_labels",
+      "description": "xView2 challenge labels, the damage-grade reference set. GET only, asked for by the name xview2_labels."
+    },
+    {
+      "id": "allow-ms-building-footprints",
+      "effect": "allow",
+      "verdict_class": "approved-source-allow",
+      "kind": "network",
+      "hosts": ["github.com"],
+      "ports": [443],
+      "methods": ["GET"],
+      "path_prefixes": ["/microsoft/GlobalMLBuildingFootprints"],
+      "dataset": "ms_building_footprints",
+      "description": "Microsoft GlobalMLBuildingFootprints, the rural fallback for the counties that have no GIS department. Scoped to one repository path, so allowing this dataset does not allow the whole of github.com."
+    },
+    {
+      "id": "allow-cms-facilities",
+      "effect": "allow",
+      "verdict_class": "approved-source-allow",
+      "kind": "network",
+      "hosts": ["data.cms.gov"],
+      "ports": [443],
+      "methods": ["GET"],
+      "dataset": "cms_facilities",
+      "description": "CMS Care Compare, facility level only, which is what fills facility_near. GET only, asked for by the name cms_facilities."
+    },
+    {
+      "id": "allow-cdc-svi",
+      "effect": "allow",
+      "verdict_class": "approved-source-allow",
+      "kind": "network",
+      "hosts": ["www.atsdr.cdc.gov"],
+      "ports": [443],
+      "methods": ["GET"],
+      "dataset": "cdc_svi",
+      "description": "CDC Social Vulnerability Index block groups, which is what fills vulnerable_density. GET only, asked for by the name cdc_svi."
+    },
+    {
+      "id": "allow-data-dir",
+      "effect": "allow",
+      "verdict_class": "approved-source-allow",
+      "kind": "filesystem",
+      "methods": ["READ", "WRITE"],
+      "roots": ["./data"],
+      "description": "The filesystem is scoped to ./data. Tiles, the SQLite database, the datasets and the withheld vault all live there, and nothing else on the box is reachable. A dropped owner-name file one directory up is not readable, which is the point."
+    }
+  ],
+  "filesystem": {
+    "roots": ["./data"],
+    "description": "Read and write scoped to ./data. Enforcement in the real runtime is landlock plus DAC as the sandbox user; app/containment.py refuses the same paths in process so the API can name the attempt in an audit line."
+  }
+}

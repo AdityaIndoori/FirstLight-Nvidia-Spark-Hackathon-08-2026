@@ -1,0 +1,46 @@
+{
+  "type": "FeatureCollection",
+  "_comment": "SYNTHETIC fixture, NOT real OSM data. Demonstrates the exact local-source interface backend/routing/osm_loader.py expects until Member A supplies the real export. Same diamond shape as the B4a test graph (START-B-C-END shorter, START-D-E-END longer), plus a footway and an explicit drivable:false road that must both be excluded.",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"name": "Start to B Rd"},
+      "geometry": {"type": "LineString", "coordinates": [[-122.400, 47.600], [-122.395, 47.605]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": "B to C Ave", "oneway": true},
+      "geometry": {"type": "LineString", "coordinates": [[-122.395, 47.605], [-122.385, 47.605]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": null},
+      "geometry": {"type": "LineString", "coordinates": [[-122.385, 47.605], [-122.380, 47.600]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": "Start to D Rd", "length_m": 999.0},
+      "geometry": {"type": "LineString", "coordinates": [[-122.400, 47.600], [-122.395, 47.595]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": "D to E Ave"},
+      "geometry": {"type": "LineString", "coordinates": [[-122.395, 47.595], [-122.385, 47.595]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": "E to End Rd"},
+      "geometry": {"type": "LineString", "coordinates": [[-122.385, 47.595], [-122.380, 47.600]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": "Diamond Footpath", "highway": "footway"},
+      "geometry": {"type": "LineString", "coordinates": [[-122.398, 47.602], [-122.396, 47.603]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": "Closed Service Road", "highway": "service", "drivable": false},
+      "geometry": {"type": "LineString", "coordinates": [[-122.393, 47.601], [-122.391, 47.602]]}
+    }
+  ]
+}

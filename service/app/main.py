@@ -107,15 +107,38 @@ def status() -> dict:
         last_replan_ms=_replan_ms,
         recovery=_recovery,
         doubt_distribution=ranked["doubt_distribution"],
+        aoi=config.AOI,
+        aoi_name=getattr(config, "AOI_NAME", "custom"),
         datasets=librarian.catalog() if librarian and hasattr(librarian, "catalog") else [],
-        openshell={
-            "policy": "egress allowlist: localhost inference plus five GET-only sources",
-            "denials": 0,
-            "allows": 0,
-            "audit": [],
-            "note": "NemoClaw and OpenShell are B5, not wired yet. This panel reports that honestly.",
-        },
+        openshell=_openshell_status(),
     )
+
+
+def _openshell_status() -> dict:
+    """B5. The real enforcement and audit layer, or an honest report of its
+    absence: containment.status() names which feed is on screen and never claims
+    runtime enforcement it does not have."""
+    mod = _mod("containment")
+    if mod and hasattr(mod, "status"):
+        try:
+            return mod.status()
+        except Exception as exc:
+            return {
+                "policy": "policy state could not be read",
+                "denials": 0,
+                "allows": 0,
+                "audit": [],
+                "note": f"containment layer failed to report: {exc}",
+                "overhead_ms": None,
+            }
+    return {
+        "policy": "egress allowlist: localhost inference plus five GET-only sources",
+        "denials": 0,
+        "allows": 0,
+        "audit": [],
+        "note": "containment module not importable, so no policy state is shown.",
+        "overhead_ms": None,
+    }
 
 
 def _count(table: str, where: str = "1=1") -> int:
@@ -344,18 +367,94 @@ def flight() -> dict:
 
 @app.get("/api/route")
 def route(footprint_id: str = "", agency: str = "") -> dict:
-    """B4's Dijkstra is not built yet. Answer the contract honestly rather than
-    inventing a straight line the map would then draw through buildings."""
-    return {
-        "ok": False,
-        "geometry": None,
-        "steps": [],
-        "distance_m": 0,
-        "eta_min": 0.0,
-        "crosses_blockage": False,
-        "blocked_roads_avoided": [],
-        "warning": "offline routing not wired yet (B4)",
-    }
+    """Turn-by-turn to one building over the local road graph, B4.
+
+    The drive starts at the incident staging point, which is the centre of the
+    configured AOI: the console asks "how does a crew get to this door", and from
+    an EOC that is where the crew leaves from. routing snaps it to the nearest
+    mapped road and charges the snap distance, so the number is not flattered.
+
+    When there is no road network loaded this keeps answering ok:false with a
+    warning, because a straight line the map would then draw through buildings is
+    worse than an honest refusal.
+    """
+    routing = _mod("routing")
+    if routing is None or not hasattr(routing, "route"):
+        return {
+            "ok": False,
+            "geometry": None,
+            "steps": [],
+            "distance_m": 0,
+            "eta_min": 0.0,
+            "crosses_blockage": False,
+            "blocked_roads_avoided": [],
+            "warning": "routing unavailable: the offline routing module is not loadable",
+        }
+    if not routing.available():
+        stats = routing.graph_stats()
+        return {
+            "ok": False,
+            "geometry": None,
+            "steps": [],
+            "distance_m": 0,
+            "eta_min": 0.0,
+            "crosses_blockage": False,
+            "blocked_roads_avoided": [],
+            "warning": (
+                "routing unavailable: the local road table has "
+                f"{stats.get('roads_features', 0)} features and builds no graph, so no "
+                "offline route can be computed"
+            ),
+        }
+
+    dest = None
+    if footprint_id:
+        row = db.q1(
+            "SELECT centroid_json FROM buildings WHERE footprint_id = ?", (footprint_id,)
+        )
+        if row is not None:
+            dest = db.jload(row["centroid_json"])
+    if dest is None and footprint_id.startswith("block:"):
+        # A police closure post carries footprint_id "block:<road name>", which is
+        # not a building at all, so route to the head of the declared closure.
+        blk = db.q1(
+            "SELECT geom_json FROM road_blocks WHERE road_name = ?",
+            (footprint_id.split(":", 1)[1],),
+        )
+        if blk is not None:
+            coords = (db.jload(blk["geom_json"], {}) or {}).get("coordinates") or []
+            if coords and isinstance(coords[0], (list, tuple)) and len(coords[0]) >= 2:
+                dest = [float(coords[0][0]), float(coords[0][1])]
+    if not dest:
+        return {
+            "ok": False,
+            "geometry": None,
+            "steps": [],
+            "distance_m": 0,
+            "eta_min": 0.0,
+            "crosses_blockage": False,
+            "blocked_roads_avoided": [],
+            "warning": (
+                f"no route: {footprint_id or 'the request'} has no known location to "
+                "route to"
+            ),
+        }
+
+    w, s, e, n = config.AOI
+    staging = [(w + e) / 2.0, (s + n) / 2.0]
+    out = routing.route(staging, dest)
+    db.log(
+        "system",
+        "route",
+        {
+            "footprint_id": footprint_id,
+            "agency": agency,
+            "ok": out["ok"],
+            "distance_m": out["distance_m"],
+            "avoided": out["blocked_roads_avoided"],
+        },
+    )
+    return out
 
 
 # ---------------------------------------------------------------- tiles, upload
