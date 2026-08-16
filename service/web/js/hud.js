@@ -216,7 +216,7 @@ function paintLatency(s) {
   if (!n) {
     setText(
       "strip-latency",
-      "per-tile not measured yet",
+      "not measured yet",
       "no tiles have been graded under the current settings. Upload imagery and this " +
         "becomes a median measured on this box, not a quoted figure."
     );
