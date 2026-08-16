@@ -1,0 +1,784 @@
+/* FIRST LIGHT operator console.
+ *
+ * Readable from the back of the room: nothing under 11 px, route numerals big
+ * and heavy, one green accent and one blue secondary, no gradients.
+ * Panel modules inject their own prefixed styles and read these variables, so
+ * every colour lives here once.
+ */
+
+:root {
+  --bg: #0a0d12;
+  --panel: #11161f;
+  --panel2: #0d1219;
+  --line: #1f2733;
+  --ink: #dde6ee;
+  --green: #76b900;
+  --blue: #4cc2ff;
+  --dim: #8899aa;
+  --red: #ff5c5c;
+  --amber: #ffb84c;
+
+  --fire: #ff6b4a;
+  --ems: #4cc2ff;
+  --police: #b08cff;
+  --works: #ffd24c;
+
+  --c3: #ff5c5c;
+  --c2: #ff9f45;
+  --c1: #f2e35c;
+  --c0: #7fbf5f;
+
+  --sunk: #060a0f;
+}
+
+* { box-sizing: border-box; margin: 0; }
+
+html, body { height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.4 "Segoe UI", system-ui, -apple-system, sans-serif;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+b, strong { font-weight: 600; }
+
+code {
+  font: 12px/1.4 Consolas, "Cascadia Mono", monospace;
+  color: var(--ink);
+  background: var(--sunk);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+.empty {
+  color: var(--dim);
+  font-size: 12.5px;
+  padding: 10px 2px;
+}
+
+.dimtext { color: var(--dim); font-size: 12px; }
+
+/* ------------------------------------------------------------------- top bar */
+.top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel2);
+  flex: none;
+}
+
+.top h1 {
+  font-size: 17px;
+  letter-spacing: 4px;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.top h1 .lit { color: var(--green); }
+
+.top .grow { flex: 1; }
+
+.chip {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 9px;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.chip.ok { border-color: var(--green); color: var(--green); }
+.chip.warn { border-color: var(--amber); color: var(--amber); }
+.chip.bad { border-color: var(--red); color: var(--red); }
+
+.opname {
+  background: var(--sunk);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 13px;
+  width: 210px;
+}
+
+.opname:focus { outline: none; border-color: var(--blue); }
+
+.opname.flash {
+  border-color: var(--red);
+  animation: flashborder .4s steps(1) 3;
+}
+
+@keyframes flashborder { 50% { border-color: var(--line); } }
+
+.btn {
+  background: var(--green);
+  color: var(--bg);
+  border: 0;
+  border-radius: 5px;
+  padding: 7px 14px;
+  font: 600 13px inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.btn:hover { filter: brightness(1.12); }
+.btn.sec { background: transparent; border: 1px solid var(--blue); color: var(--blue); }
+.btn.big { font-size: 14px; padding: 9px 18px; }
+.btn[disabled] { opacity: .5; cursor: default; }
+
+/* --------------------------------------------------------------- three column */
+.main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) 400px;
+  min-height: 0;
+}
+
+/* ----------------------------------------------------------------- left rail */
+.rail {
+  border-right: 1px solid var(--line);
+  background: var(--panel2);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.rail section { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+
+.rail h2 {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--blue);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.rail h2 .sub { text-transform: none; letter-spacing: 0; color: var(--dim); }
+
+.stage { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12.5px; }
+.stage .lab { flex: 1; min-width: 0; }
+.stage .n { color: var(--dim); font-size: 12px; white-space: nowrap; }
+
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); flex: none; }
+.dot.done { background: var(--green); }
+.dot.busy { background: var(--amber); animation: pulse 1.2s infinite; }
+.dot.bad { background: var(--red); }
+
+@keyframes pulse { 50% { opacity: .35; } }
+
+.withheld-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 7px 9px;
+  border: 1px solid #3a2530;
+  border-radius: 6px;
+  background: #180f14;
+  font-size: 12.5px;
+}
+
+.withheld-row b { color: var(--red); }
+.withheld-row .lock { margin-left: auto; color: var(--dim); font-size: 11px; }
+.withheld-row[hidden] { display: none; }
+
+#upload-panel:empty { display: none; }
+#upload-cards:empty { display: none; }
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  padding: 3px 0;
+  color: var(--dim);
+}
+
+.kv b { color: var(--ink); font-weight: 600; white-space: nowrap; }
+
+.avail { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; font-size: 13px; }
+.avail .aname { display: flex; align-items: center; gap: 7px; }
+
+.sw { width: 10px; height: 10px; border-radius: 2px; flex: none; display: inline-block; }
+
+.uin {
+  width: 46px;
+  background: var(--sunk);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  text-align: center;
+  padding: 3px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.uin:focus { outline: none; border-color: var(--blue); }
+
+.availbtns { display: flex; gap: 8px; margin-top: 9px; }
+
+.savebtn {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--dim);
+  border-radius: 5px;
+  padding: 5px 12px;
+  font: 600 12px inherit;
+  cursor: pointer;
+}
+
+.savebtn.dirty { border-color: var(--green); color: var(--green); }
+
+.redraft {
+  display: none;
+  background: var(--amber);
+  color: var(--bg);
+  border: 0;
+  border-radius: 5px;
+  padding: 5px 12px;
+  font: 600 12px inherit;
+  cursor: pointer;
+  animation: pulse 1.4s infinite;
+}
+
+.redraft.show { display: inline-block; }
+
+.savednote { font-size: 11px; color: var(--dim); margin-top: 5px; }
+
+/* ----------------------------------------------------------------- map area */
+.maparea { position: relative; background: #0c1016; min-width: 0; overflow: hidden; }
+
+#map { position: absolute; inset: 0; }
+
+.mapfallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12% ;
+  background: #0c1016;
+  z-index: 2;
+}
+
+.mapfallback[hidden] { display: none; }
+.mapfallback b { font-size: 15px; color: var(--amber); }
+.mapfallback p { font-size: 13px; color: var(--dim); max-width: 60ch; }
+
+/* legend is the filter, so it looks like controls and not like a caption */
+.maplegend {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: rgba(13, 18, 25, .96);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px 11px;
+  font-size: 11.5px;
+  user-select: none;
+  max-height: calc(100% - 92px);
+  overflow-y: auto;
+  z-index: 3;
+  /* Wide enough to read, capped so the layer list never eats the map it filters. */
+  width: 250px;
+}
+
+.maplegend .lhead { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+
+.maplegend .lhead b {
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-right: 2px;
+}
+
+.lpreset {
+  font-size: 11px;
+  color: var(--blue);
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.lpreset:hover { border-color: var(--blue); }
+.lpreset.on { border-color: var(--blue); background: #12222d; }
+
+.lchev {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 3px;
+}
+
+.lchev:hover { color: var(--ink); }
+
+.maplegend.collapsed { width: auto; }
+.maplegend.collapsed #legend-body,
+.maplegend.collapsed .lfoot,
+.maplegend.collapsed .lpreset { display: none; }
+.maplegend.collapsed .lchev { transform: rotate(-90deg); }
+
+.maplegend .lt {
+  color: var(--dim);
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  margin: 7px 0 2px;
+}
+
+.lrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1.25;
+}
+
+.lrow:hover { background: #151c27; }
+
+.lrow .cb {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--dim);
+  border-radius: 3px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: var(--green);
+}
+
+.lrow.on .cb { border-color: var(--green); }
+.lrow.on .cb::after { content: "\2713"; }
+.lrow.off { opacity: .38; }
+.lrow .lname { flex: 1; min-width: 0; }
+.lrow .cnt { color: var(--dim); font-size: 11px; margin-left: auto; font-variant-numeric: tabular-nums; }
+/* A hidden layer still reports how much it is hiding, but reads as suppressed. */
+.lrow.off .cnt { text-decoration: line-through; }
+.lrow.empty-layer .lname { color: var(--dim); }
+
+.dash { width: 22px; height: 0; border-top: 3px dashed; flex: none; }
+.solid { width: 22px; height: 0; border-top: 3px solid; flex: none; }
+
+.pin {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  color: var(--bg);
+  font: 700 11px/15px sans-serif;
+  text-align: center;
+  flex: none;
+}
+
+.cross {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: #ffffff;
+  flex: none;
+  position: relative;
+}
+
+.cross::before, .cross::after {
+  content: "";
+  position: absolute;
+  background: #c62828;
+}
+
+.cross::before { left: 6px; top: 2.5px; width: 2px; height: 9px; }
+.cross::after { top: 6px; left: 2.5px; height: 2px; width: 9px; }
+
+.lfoot {
+  color: var(--dim);
+  font-size: 11px;
+  margin-top: 8px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+.lfoot:empty { display: none; }
+.lfoot .approx { color: var(--amber); }
+
+.mapctl { position: absolute; top: 12px; right: 12px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; z-index: 3; }
+
+.mini {
+  font-size: 11.5px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: rgba(13, 18, 25, .9);
+  color: var(--dim);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.mini:hover { border-color: var(--blue); color: var(--blue); }
+.mini.on { border-color: var(--green); color: var(--green); }
+.mini.confirm { border-color: var(--green); color: var(--green); flex: none; }
+.mini.amber { border-color: var(--amber); color: var(--amber); }
+.mini[disabled] { opacity: .45; cursor: default; }
+.mini[disabled]:hover { border-color: var(--line); color: var(--dim); }
+
+.banner {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(13, 18, 25, .94);
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  border-radius: 6px;
+  padding: 7px 16px;
+  font-size: 13px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  z-index: 3;
+  max-width: calc(100% - 40px);
+}
+
+.banner[hidden] { display: none; }
+
+/* Big legible route numerals: a crew reads these from arm's length. */
+.routepin {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: var(--bg);
+  font: 700 15px/26px "Segoe UI", system-ui, sans-serif;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 0 0 2px rgba(10, 13, 18, .85);
+}
+
+.faccross {
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  background: #ffffff;
+  position: relative;
+  cursor: pointer;
+  box-shadow: 0 0 0 2px rgba(10, 13, 18, .8);
+}
+
+.faccross::before, .faccross::after { content: ""; position: absolute; background: #c62828; }
+.faccross::before { left: 8.5px; top: 3px; width: 3px; height: 14px; }
+.faccross::after { top: 8.5px; left: 3px; height: 3px; width: 14px; }
+
+.archivepin {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  background: var(--blue);
+  cursor: pointer;
+}
+
+/* MapLibre popup, re-skinned to the console instead of its default white */
+.maplibregl-popup-content {
+  background: var(--panel) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 12.5px/1.4 "Segoe UI", system-ui, sans-serif;
+  padding: 8px 10px !important;
+  max-width: 260px;
+}
+
+.maplibregl-popup-tip { border-top-color: var(--line) !important; border-bottom-color: var(--line) !important; }
+.maplibregl-popup-close-button { color: var(--dim) !important; font-size: 15px; }
+.popup h4 { font-size: 13px; margin-bottom: 3px; }
+.popup .sub { color: var(--dim); font-size: 11.5px; }
+.maplibregl-ctrl-group { background: rgba(13, 18, 25, .9) !important; }
+.maplibregl-ctrl-group button + button { border-top-color: var(--line) !important; }
+.maplibregl-ctrl-attrib { background: rgba(13, 18, 25, .8) !important; }
+.maplibregl-ctrl-attrib a { color: var(--dim) !important; }
+
+/* ---------------------------------------------------------------- work queue */
+.queue {
+  border-left: 1px solid var(--line);
+  background: var(--panel2);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.tabs { display: flex; border-bottom: 1px solid var(--line); flex: none; }
+
+.tab {
+  flex: 1;
+  text-align: center;
+  padding: 9px 4px;
+  font: 12.5px inherit;
+  letter-spacing: 1px;
+  color: var(--dim);
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tab.on { color: var(--green); border-bottom-color: var(--green); }
+.tab .tabn { color: var(--dim); font-size: 11px; }
+.tab.on .tabn { color: var(--green); }
+
+.qbody { flex: 1; overflow-y: auto; padding: 10px 12px; min-height: 0; }
+
+.panel { display: none; }
+.panel.on { display: block; }
+
+/* --------------------------------------------------------- rank evidence card */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 9px;
+}
+
+.card.pinned { border-color: #33501b; }
+
+.card .head { display: flex; align-items: baseline; gap: 8px; }
+
+.rankn {
+  font: 700 17px/1 "Segoe UI", system-ui, sans-serif;
+  color: var(--green);
+  min-width: 30px;
+  flex: none;
+}
+
+.addr { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; }
+
+.cls {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 3px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  flex: none;
+  letter-spacing: .5px;
+}
+
+.cls.c3 { background: #3a1512; color: var(--c3); }
+.cls.c2 { background: #3a2612; color: var(--c2); }
+.cls.c1 { background: #33320f; color: var(--c1); }
+.cls.c0 { background: #16290f; color: var(--c0); }
+
+.facility { font-size: 12px; color: var(--blue); margin-top: 3px; }
+.vuln { font-size: 12px; color: var(--dim); margin-top: 2px; }
+.vuln.high { color: var(--amber); }
+/* The index reads as one unit, so it never wraps mid-parenthesis. */
+.vuln .idx { white-space: nowrap; }
+.confirmedby { font-size: 11.5px; color: var(--green); margin-top: 3px; }
+
+.formula {
+  font: 12px/1.5 Consolas, "Cascadia Mono", monospace;
+  color: var(--dim);
+  margin-top: 6px;
+  background: var(--sunk);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.formula b { color: var(--ink); font-weight: 600; }
+.formula .prod { color: var(--green); }
+
+.cardrow { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.cardrow .lbl { font-size: 11.5px; color: var(--dim); }
+.cardrow .tally { font-size: 12px; color: var(--ink); }
+
+/* The ballot sentence sits above its bar, so a long tally never squeezes the
+ * meter down to a nub. */
+.ballot { margin-top: 8px; }
+.ballot .ballotsay { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.ballot .cardrow { margin-top: 5px; }
+
+.doubtbar {
+  flex: 1;
+  min-width: 60px;
+  height: 6px;
+  background: var(--sunk);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.doubtbar > div { height: 100%; background: var(--amber); }
+.doubtbar.low > div { background: var(--green); }
+.doubtbar.high > div { background: var(--red); }
+
+.doubtval { font-size: 11.5px; color: var(--amber); white-space: nowrap; }
+
+.graderow { border-top: 1px solid var(--line); padding-top: 9px; margin-top: 9px; }
+.gradelabel { font-size: 11.5px; color: var(--dim); white-space: nowrap; }
+.gradelabel i { font-style: normal; color: var(--ink); }
+.graderow select { flex: 1; min-width: 90px; }
+
+select {
+  background: var(--sunk);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: 12px inherit;
+}
+
+select:focus { outline: none; border-color: var(--blue); }
+
+.rankhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.rankhead .t {
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  color: var(--dim);
+  text-transform: uppercase;
+  flex: 1;
+  min-width: 0;
+}
+
+.doubtsummary {
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--amber);
+  border-radius: 5px;
+  padding: 7px 10px;
+  margin-bottom: 10px;
+}
+
+.doubtsummary b { color: var(--amber); }
+.doubtsummary .sub { display: block; color: var(--dim); font-size: 11.5px; margin-top: 3px; }
+
+.rationale { font-size: 12px; color: var(--dim); margin-top: 7px; font-style: italic; }
+.rationale .by { font-style: normal; color: var(--green); }
+
+/* ------------------------------------------------------------- bottom strip */
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--panel2);
+  font-size: 12px;
+  color: var(--dim);
+  overflow-x: auto;
+  white-space: nowrap;
+  flex: none;
+}
+
+.strip b { color: var(--ink); }
+.strip .audit { color: var(--green); font: 11.5px Consolas, "Cascadia Mono", monospace; }
+.strip .deny { color: var(--red); }
+
+/* ---------------------------------------------------------------- tooltips */
+/* Hover uses the native title. A tap swaps it into data-tip and shows the big
+ * bubble, so a touch screen gets the same explanation a mouse does. */
+.tip { border-bottom: 1px dotted var(--dim); cursor: help; }
+.tip.tip-open { position: relative; border-bottom-color: var(--blue); }
+
+.tip.tip-open::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  width: max-content;
+  max-width: 280px;
+  background: #0e141d;
+  color: var(--ink);
+  border: 1px solid var(--blue);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: 12px/1.45 "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .55);
+}
+
+.queue .tip.tip-open::after, .maplegend .tip.tip-open::after { left: auto; right: 0; }
+
+/* ------------------------------------------------------------------ toasts */
+#toasts {
+  position: fixed;
+  bottom: 44px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  z-index: 60;
+  pointer-events: none;
+  max-width: 380px;
+}
+
+.toast {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--dim);
+  border-radius: 5px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: var(--ink);
+  transition: opacity .5s;
+}
+
+.toast.ok { border-left-color: var(--green); }
+.toast.warn { border-left-color: var(--amber); }
+.toast.err { border-left-color: var(--red); }
+.toast.info { border-left-color: var(--blue); }
+.toast.go { opacity: 0; }
+
+/* --------------------------------------------------------------- narrow box */
+@media (max-width: 1500px) {
+  .main { grid-template-columns: 270px minmax(0, 1fr) 370px; }
+}
+
+@media (max-width: 1280px) {
+  .main { grid-template-columns: 240px minmax(0, 1fr) 340px; }
+  .top { gap: 10px; }
+  .opname { width: 160px; }
+}
+
+/* MapLibre's own scale readout ships at 10 px, under our legibility floor. */
+.maplibregl-ctrl-scale {
+  font-size: 11px !important;
+  color: var(--ink) !important;
+  background: rgba(13, 18, 25, .8) !important;
+  border-color: var(--line) !important;
+}

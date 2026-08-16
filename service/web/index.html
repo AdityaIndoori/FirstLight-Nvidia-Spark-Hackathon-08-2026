@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FIRST LIGHT - operator console</title>
+<!-- Vendored MapLibre only. No CDN, no external style, no font server. -->
+<link rel="stylesheet" href="vendor/maplibre-gl.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<div class="top">
+  <h1>FIRST <span class="lit">LIGHT</span></h1>
+  <span class="chip ok tip" id="chip-policy"
+        title="Every outbound request is judged by the OpenShell sandbox policy: local inference is allowed, five named data sources are allowed read-only, everything else is denied. The network stays plugged in; policy is what holds.">POLICY: checking</span>
+  <span class="chip" id="chip-opperiod">OP PERIOD</span>
+  <span class="chip warn" id="chip-flight">NEXT FLIGHT: awaiting plan</span>
+  <div class="grow"></div>
+  <input class="opname" id="opname" autocomplete="off" spellcheck="false"
+         placeholder="Operator name (required to edit)"
+         title="Every grade change, road closure and plan edit is written to an append-only log under this name. No name, no edit.">
+  <input type="file" id="upload-input" multiple accept="image/*,.tif,.tiff" hidden>
+  <button class="btn sec" id="btn-upload">Upload drone images</button>
+  <a class="btn big" id="btn-aid" href="api/export/aid-package" download>Download aid package</a>
+</div>
+
+<div class="main">
+
+  <!-- ------------------------------------------------------------ left rail -->
+  <div class="rail">
+    <section>
+      <h2>Incoming imagery</h2>
+      <div id="rail-ingest">
+        <div class="stage" id="stage-1">
+          <span class="dot"></span>
+          <span class="lab tip" title="xView2 outlines every building in the tile and the vision model grades each one from 0 (no damage) to 3 (destroyed).">1 analyzing (outlines + grades)</span>
+          <span class="n">waiting</span>
+        </div>
+        <div class="stage" id="stage-2">
+          <span class="dot"></span>
+          <span class="lab tip" title="Each building is joined to its address, nearby care facilities and resident vulnerability, then the fast model votes on the grade to produce an uncertainty figure.">2 indexing (join, doubt, caption)</span>
+          <span class="n">waiting</span>
+        </div>
+        <div class="stage" id="stage-3">
+          <span class="dot"></span>
+          <span class="lab tip" title="The person detector runs before anything can be written to the archive. Person signal, or any detector error, withholds the image from storage. The grades it produced are kept, because a person in frame is rescue signal.">3 storage decision (privacy gate)</span>
+          <span class="n">waiting</span>
+        </div>
+        <div class="withheld-row" id="withheld-row" hidden>
+          <b><span id="withheld-count">0</span> withheld</b> from storage
+          <span class="lock tip" title="Withheld images were analyzed and their buildings are in the rank. They are never stored, indexed, thumbnailed or searchable, and are reachable only from the authorized review endpoint.">authorized review only</span>
+        </div>
+      </div>
+      <div id="upload-panel"><div id="upload-cards"></div></div>
+    </section>
+
+    <section>
+      <h2>Units available <span class="sub tip" title="These numbers come from you, not from a dispatch feed. The plan compares its ask against what you enter here, and flags any agency it would over-commit.">(entered by you)</span></h2>
+      <div id="rail-avail">
+        <div id="avail-list">
+          <div class="avail"><span class="aname"><span class="sw" style="background:var(--fire)"></span>Fire</span><input class="uin" data-agency="fire" inputmode="numeric" value="0"></div>
+          <div class="avail"><span class="aname"><span class="sw" style="background:var(--ems)"></span>EMS</span><input class="uin" data-agency="ems" inputmode="numeric" value="0"></div>
+          <div class="avail"><span class="aname"><span class="sw" style="background:var(--police)"></span>Police</span><input class="uin" data-agency="police" inputmode="numeric" value="0"></div>
+          <div class="avail"><span class="aname"><span class="sw" style="background:var(--works)"></span>Public Works</span><input class="uin" data-agency="public_works" inputmode="numeric" value="0"></div>
+        </div>
+        <div class="availbtns">
+          <button class="savebtn" id="btn-avail-save">Save</button>
+          <button class="redraft" id="btn-redraft">Re-draft plan</button>
+        </div>
+        <div class="savednote" id="avail-note">not saved yet</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Situation</h2>
+      <div id="situation-list"><div class="empty">no imagery analyzed yet</div></div>
+    </section>
+
+    <section>
+      <h2>Exports</h2>
+      <div id="exports-list"><div class="empty">readiness appears once tiles are analyzed</div></div>
+    </section>
+  </div>
+
+  <!-- -------------------------------------------------------------- the map -->
+  <div class="maparea">
+    <div id="map"></div>
+
+    <div id="map-fallback" class="mapfallback" hidden>
+      <b>Map engine not loaded</b>
+      <p id="map-fallback-why">The vendored MapLibre build was not found at <code>vendor/maplibre-gl.js</code>.</p>
+      <p class="dimtext">The rest of the console keeps working: rank, dispatch, archive, flight and the exports all run without the map.</p>
+    </div>
+
+    <div class="maplegend" id="legend">
+      <div class="lhead">
+        <b>Map layers</b>
+        <span class="lpreset tip" data-preset="triage" title="Damage classes, care facilities and road blockages. What you look at first.">Triage</span>
+        <span class="lpreset tip" data-preset="dispatch" title="Destroyed buildings, every agency route and post, care facilities, blockages and the next flight box. What a crew needs.">Dispatch</span>
+        <span class="lpreset" data-preset="all">All</span>
+        <button class="lchev" id="legend-chevron" title="Collapse the layer list and give the map back" aria-label="Collapse layer list">&#9662;</button>
+      </div>
+      <div id="legend-body"><div class="empty">layer list appears with the map</div></div>
+      <div class="lfoot" id="legend-foot"></div>
+    </div>
+
+    <div class="mapctl">
+      <button class="mini on" id="btn-basemap-tactical">Tactical</button>
+      <button class="mini" id="btn-basemap-satellite">Satellite</button>
+      <button class="mini" id="btn-fit">Fit area</button>
+      <button class="mini" id="btn-block-road">Block a road</button>
+      <button class="mini" id="btn-replan">Replan flight</button>
+    </div>
+
+    <div class="banner" id="map-banner" hidden></div>
+  </div>
+
+  <!-- ------------------------------------------------------------ work queue -->
+  <div class="queue">
+    <div class="tabs">
+      <button class="tab on" data-tab="dispatch">Dispatch</button>
+      <button class="tab" data-tab="rank">Rank <span class="tabn" id="tab-rank-count"></span></button>
+      <button class="tab" data-tab="archive">Archive <span class="tabn" id="tab-archive-count"></span></button>
+      <button class="tab" data-tab="flight">Flight</button>
+    </div>
+    <div class="qbody">
+      <div class="panel on" id="panel-dispatch"><div class="empty">the agency plan appears once buildings are ranked</div></div>
+      <div class="panel" id="panel-rank"><div class="empty">no ranked buildings yet</div></div>
+      <div class="panel" id="panel-archive"><div class="empty">the searchable archive appears once images are stored</div></div>
+      <div class="panel" id="panel-flight"><div class="empty">the next flight proposal appears after the first pass</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="strip" id="hud">
+  <span>tiles <b id="strip-tiles">0</b></span>
+  <span>per-tile <b id="strip-latency">-</b></span>
+  <span>replan <b id="strip-replan">-</b></span>
+  <span id="strip-tokens">models <b>not reported</b></span>
+  <span>memory <b id="strip-memory">-</b></span>
+  <span class="audit" id="strip-audit">audit: waiting for status</span>
+</div>
+
+<div id="toasts"></div>
+
+<!-- Vendored map engine. A missing file degrades to #map-fallback, it never throws. -->
+<script src="vendor/maplibre-gl.js"></script>
+
+<script type="module">
+/*
+ * Console shell. Inline on purpose: an inline module runs even from file://,
+ * where a fetched module script would be blocked, so the operator always sees
+ * the full console instead of a blank page. Every sibling module is imported
+ * dynamically inside a try/catch, so one missing panel never takes the rest down.
+ */
+const MODULE_NAMES = ['map', 'rank', 'upload', 'dispatch', 'archive', 'hud', 'flight'];
+const AGENCIES = ['fire', 'ems', 'police', 'public_works'];
+const AGENCY_LABEL = { fire: 'Fire', ems: 'EMS', police: 'Police', public_works: 'Public Works' };
+const CLASS_LABEL = { 0: 'no damage', 1: 'minor damage', 2: 'major damage', 3: 'destroyed' };
+
+// Endpoints live at /api on the serving origin. Off http (a bare file open) we
+// resolve relative instead, which fails fast and lands in the empty states.
+const API_ROOT = /^https?:$/.test(location.protocol)
+  ? location.origin + '/'
+  : new URL('.', location.href).href;
+
+const el = (id) => document.getElementById(id);
+
+function apiUrl(path) {
+  return new URL(String(path).replace(/^\/+/, ''), API_ROOT).href;
+}
+
+async function request(path, init, timeoutMs) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs || 15000);
+  try {
+    const res = await fetch(apiUrl(path), Object.assign({ signal: ac.signal }, init || {}));
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' on ' + path);
+    const ctype = res.headers.get('content-type') || '';
+    return ctype.indexOf('json') >= 0 ? await res.json() : await res.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const api = {
+  url: apiUrl,
+  get: (path, opts) => request(path, { method: 'GET' }, opts && opts.timeoutMs),
+  post: (path, body, opts) => request(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body === undefined ? {} : body),
+  }, opts && opts.timeoutMs),
+  form: (path, formData, opts) => request(path, { method: 'POST', body: formData },
+    (opts && opts.timeoutMs) || 180000),
+};
+
+// ------------------------------------------------------------------- event bus
+const handlers = new Map();
+const bus = {
+  on(evt, fn) {
+    if (!handlers.has(evt)) handlers.set(evt, []);
+    handlers.get(evt).push(fn);
+    return () => bus.off(evt, fn);
+  },
+  off(evt, fn) {
+    const list = handlers.get(evt);
+    if (!list) return;
+    const i = list.indexOf(fn);
+    if (i >= 0) list.splice(i, 1);
+  },
+  emit(evt, detail) {
+    const list = handlers.get(evt);
+    if (!list || !list.length) return 0;
+    let ran = 0;
+    for (const fn of list.slice()) {
+      try { fn(detail); ran += 1; } catch (err) { console.warn('handler for ' + evt + ' failed', err); }
+    }
+    return ran;
+  },
+};
+
+// --------------------------------------------------------------------- toasts
+function toast(text, kind) {
+  const host = el('toasts');
+  if (!host) return;
+  const node = document.createElement('div');
+  node.className = 'toast ' + (kind || 'info');
+  node.textContent = String(text);
+  host.appendChild(node);
+  setTimeout(() => node.classList.add('go'), 4200);
+  setTimeout(() => node.remove(), 4800);
+}
+
+// ------------------------------------------------------------------- operator
+function operator() {
+  const input = el('opname');
+  return input ? input.value.trim() : '';
+}
+
+function requireOperator() {
+  const name = operator();
+  if (name) return name;
+  const input = el('opname');
+  if (input) {
+    input.classList.add('flash');
+    setTimeout(() => input.classList.remove('flash'), 1600);
+    input.focus();
+  }
+  toast('Enter your name in the top bar first. Every edit is logged under it.', 'warn');
+  return null;
+}
+
+// ------------------------------------------------------------------ formatting
+const fmt = {
+  classLabel: (n) => CLASS_LABEL[Number(n)] || 'unknown',
+  classKey: (n) => 'c' + (Number(n) >= 0 && Number(n) <= 3 ? Number(n) : 'x'),
+  agencyLabel: (a) => AGENCY_LABEL[a] || String(a || '').replace(/_/g, ' '),
+  agencyColor: (a) => 'var(--' + (a === 'public_works' ? 'works' : a) + ')',
+  num(v, dec) {
+    const n = Number(v);
+    if (!isFinite(n)) return '-';
+    return n.toFixed(dec === undefined ? 3 : dec);
+  },
+  clock(epochSeconds) {
+    const n = Number(epochSeconds);
+    if (!isFinite(n) || n <= 0) return '-';
+    const d = new Date(n * 1000);
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  },
+  meters(m) {
+    const n = Number(m);
+    if (!isFinite(n)) return '-';
+    return n >= 1000 ? (n / 1000).toFixed(1) + ' km' : Math.round(n) + ' m';
+  },
+};
+
+// ----------------------------------------------------------------------- tabs
+let activeTab = 'dispatch';
+function showTab(name) {
+  const panel = el('panel-' + name);
+  if (!panel) return;
+  activeTab = name;
+  for (const p of document.querySelectorAll('.qbody .panel')) p.classList.toggle('on', p === panel);
+  for (const t of document.querySelectorAll('.tab')) t.classList.toggle('on', t.dataset.tab === name);
+  const mod = modules[name];
+  if (mod && typeof mod.refresh === 'function') {
+    try { mod.refresh(); } catch (err) { console.warn(name + ' refresh failed', err); }
+  }
+}
+
+// -------------------------------------------------------------- module registry
+const modules = {};
+
+function refreshAll() {
+  for (const name of Object.keys(modules)) {
+    const mod = modules[name];
+    if (mod && typeof mod.refresh === 'function') {
+      try { mod.refresh(); } catch (err) { console.warn(name + ' refresh failed', err); }
+    }
+  }
+}
+
+const ctx = {
+  api, bus, fmt, el, toast, operator, requireOperator, showTab,
+  refresh: refreshAll,
+  modules,
+  AGENCIES,
+  get mapModule() { return modules.map; },
+  get tab() { return activeTab; },
+};
+
+// -------------------------------------------------------------------- tooltips
+// Hover uses the native title. A tap moves the text to data-tip and opens the
+// big bubble, so the same markup answers a mouse and a finger.
+function openTip(node) {
+  if (node.dataset.tip !== undefined) return;
+  node.dataset.tip = node.getAttribute('title') || '';
+  node.removeAttribute('title');
+  node.classList.add('tip-open');
+}
+function closeTip(node) {
+  if (node.dataset.tip === undefined) return;
+  node.setAttribute('title', node.dataset.tip);
+  delete node.dataset.tip;
+  node.classList.remove('tip-open');
+}
+document.addEventListener('click', (ev) => {
+  const target = ev.target && ev.target.closest ? ev.target.closest('.tip') : null;
+  for (const open of document.querySelectorAll('.tip-open')) {
+    if (open !== target) closeTip(open);
+  }
+  if (target) {
+    if (target.classList.contains('tip-open')) closeTip(target);
+    else openTip(target);
+  }
+});
+
+// ------------------------------------------------------------- static wiring
+for (const tab of document.querySelectorAll('.tab')) {
+  tab.addEventListener('click', () => showTab(tab.dataset.tab));
+}
+
+const aid = el('btn-aid');
+if (aid) {
+  aid.href = apiUrl('api/export/aid-package');
+  aid.addEventListener('click', () => toast('Building the aid package: FEMA PDA, ICS-213, ICS-209 and the decision log.', 'info'));
+}
+
+const uploadBtn = el('btn-upload');
+const uploadInput = el('upload-input');
+if (uploadBtn && uploadInput) {
+  uploadBtn.addEventListener('click', () => uploadInput.click());
+  uploadInput.addEventListener('change', () => {
+    const files = Array.from(uploadInput.files || []);
+    if (!files.length) return;
+    if (window.FL_UPLOAD_OWNED) return;
+    if (bus.emit('upload:files', { files }) === 0) {
+      toast('The upload panel is not loaded, so these ' + files.length + ' files were not sent.', 'err');
+    }
+    uploadInput.value = '';
+  });
+}
+
+// The banner belongs to the map area, so the shell owns it and any module can post.
+bus.on('banner', (detail) => {
+  const node = el('map-banner');
+  if (!node) return;
+  if (!detail || !detail.text) { node.hidden = true; node.textContent = ''; return; }
+  node.textContent = '';
+  const span = document.createElement('span');
+  span.textContent = detail.text;
+  node.appendChild(span);
+  if (detail.action && detail.action.label) {
+    const btn = document.createElement('button');
+    btn.className = 'mini amber';
+    btn.textContent = detail.action.label;
+    btn.addEventListener('click', () => {
+      if (typeof detail.action.fn === 'function') detail.action.fn();
+    });
+    node.appendChild(btn);
+  }
+  node.hidden = false;
+  if (detail.ms) setTimeout(() => { node.hidden = true; }, detail.ms);
+});
+
+// ------------------------------------------------------- operational period
+// Derived from the box clock, never invented: the 12 hour block containing now.
+function paintOpPeriod() {
+  const chip = el('chip-opperiod');
+  if (!chip) return;
+  const now = new Date();
+  const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][now.getDay()];
+  const morning = now.getHours() >= 6 && now.getHours() < 18;
+  chip.textContent = 'OP PERIOD ' + (morning ? '1' : '2') + ' ' + day + ' '
+    + (morning ? '06:00-18:00' : '18:00-06:00');
+}
+paintOpPeriod();
+setInterval(paintOpPeriod, 60000);
+
+// ------------------------------------------------------------- situation panel
+const situation = { counts: null, rank: null };
+function paintSituation() {
+  const host = el('situation-list');
+  if (!host) return;
+  const rows = [];
+  const c = situation.counts;
+  const r = situation.rank;
+  if (c) {
+    const severe = (c.c2 || 0) + (c.c3 || 0);
+    rows.push(['Severe structures (class 2 or 3)', String(severe), false]);
+    if (c.confirmed) rows.push(['Confirmed by an operator', String(c.confirmed), false]);
+    rows.push(['Care facilities on the map', String(c.facilities || 0), false]);
+    rows.push(['Roads blocked', String(c.blocked || 0), (c.blocked || 0) > 0]);
+  }
+  if (r) {
+    if (r.facilitiesAtRisk !== undefined) {
+      rows.push(['Ranked buildings beside a care facility', String(r.facilitiesAtRisk), r.facilitiesAtRisk > 0]);
+    }
+    if (r.contested !== undefined && r.count) {
+      rows.push(['Contested grades (AI disagreed with itself)', r.contested + ' of ' + r.count, false]);
+    }
+    if (r.medianStalenessH !== undefined && r.medianStalenessH !== null) {
+      rows.push(['Hours since last look (median)', fmt.num(r.medianStalenessH, 1) + ' h', false]);
+    }
+  }
+  if (!rows.length) { host.innerHTML = '<div class="empty">no imagery analyzed yet</div>'; return; }
+  host.textContent = '';
+  for (const [label, value, alarm] of rows) {
+    const kv = document.createElement('div');
+    kv.className = 'kv';
+    const k = document.createElement('span');
+    k.textContent = label;
+    const v = document.createElement('b');
+    v.textContent = value;
+    if (alarm) v.style.color = 'var(--red)';
+    kv.append(k, v);
+    host.appendChild(kv);
+  }
+}
+bus.on('counts', (counts) => { situation.counts = counts; paintSituation(); });
+bus.on('rank:stats', (stats) => { situation.rank = stats; paintSituation(); });
+
+// ------------------------------------------------------------ status polling
+// hud.js owns the poll when it loads. If no status arrives shortly after boot,
+// the shell takes over, so the chips and the refresh trigger never go dark.
+let lastStatusKey = null;
+let statusSeen = false;
+let shellPoller = null;
+
+bus.on('status', (payload) => {
+  statusSeen = true;
+  if (shellPoller) { clearInterval(shellPoller); shellPoller = null; }
+  if (!payload) return;
+  const shell = payload.openshell || {};
+  const chip = el('chip-policy');
+  if (chip) {
+    const denials = Number(shell.denials || 0);
+    chip.textContent = 'POLICY: ' + (shell.policy || 'unknown')
+      + (denials ? ' - ' + denials + ' denied' : '');
+    chip.classList.toggle('ok', !!shell.policy && shell.policy !== 'not-wired');
+    chip.classList.toggle('warn', !shell.policy || shell.policy === 'not-wired');
+  }
+  const key = JSON.stringify([payload.tiles_analyzed, payload.tiles_stored,
+    payload.tiles_withheld_from_storage, payload.tally]);
+  if (lastStatusKey !== null && key !== lastStatusKey) bus.emit('data:changed', { from: 'status' });
+  lastStatusKey = key;
+});
+
+async function shellPollStatus() {
+  try { bus.emit('status', await api.get('api/status', { timeoutMs: 8000 })); }
+  catch (err) { /* offline or not served: the empty states already say so */ }
+}
+setTimeout(() => {
+  if (statusSeen) return;
+  shellPollStatus();
+  shellPoller = setInterval(() => { if (!statusSeen) shellPollStatus(); }, 5000);
+}, 6000);
+
+// ------------------------------------------------------------------ boot order
+const failed = [];
+for (const name of MODULE_NAMES) {
+  try {
+    const mod = await import('./js/' + name + '.js');
+    modules[name] = mod;
+    if (typeof mod.init === 'function') await mod.init(ctx);
+  } catch (err) {
+    delete modules[name];
+    failed.push(name);
+    console.warn('console module "' + name + '" not loaded:', err && err.message ? err.message : err);
+  }
+}
+
+window.FL = ctx;
+
+if (failed.length === MODULE_NAMES.length) {
+  const why = el('map-fallback-why');
+  const box = el('map-fallback');
+  if (why && box) {
+    why.textContent = 'No console module could be loaded. Opening this file directly blocks module'
+      + ' imports; serve the service directory over http to run the live console.';
+    box.hidden = false;
+  }
+  toast('Static shell only: no console module loaded.', 'err');
+} else if (failed.length) {
+  toast('Panels not loaded: ' + failed.join(', ') + '. The rest of the console is live.', 'warn');
+}
+</script>
+</body>
+</html>
