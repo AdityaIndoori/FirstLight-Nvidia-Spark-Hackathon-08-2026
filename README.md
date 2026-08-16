@@ -289,8 +289,8 @@ Each member pairs with an AI coding agent. Section 8 is the technique; Appendix 
 |---|---|---|
 | A1 | Streaming ingest | Receive frames over **RTSP** (frozen choice - the defensible "real downlink" story) plus watch-folder and SD-card fallback; content-hash dedup; emit per-tile end-to-end latency |
 | A2 | Privacy gate (guards STORAGE) | **Pivoted, and this is the sharper design.** All tiles are analyzed: a person in frame is rescue signal, so withholding it from grading would throw away the very information triage needs. The gate sits in front of the **archive writer**, not in front of analysis. Person signal, or any detector error, sends the image to the withheld vault: analyzed, never stored, never searchable, never thumbnailed. Includes **SAHI-style tiled inference** (overlapping 1280 px crops, union of verdicts) because a person downscaled to 640 px is about 5 px tall and no detector sees that. Fixture test asserts BOTH directions: the person tile DOES contribute buildings to the rank, and does NOT appear in the archive, search results, thumbnails, or any API surface except the authorized review endpoint |
-| A3 | Damage grading | Split by what the weights actually take (verified in the ensemble code: cls models concat pre+post into 6 channels): **xView2 loc** for outlines, single-image, always on; **VL grading** (Nano 12B v2 VL, guided 0-3 per crop) as primary grader; **xView2 cls** as a second grader only where cached pre-event basemap chips cover the tile. Never feed post as fake pre - "no change" reads as "no damage". All behind one `grade()` signature, active path named in the status bar |
-| A4 | Data joins | **Verified available for the demo AOI (queried live)**: Seattle Building Outlines 2023 (27,250 footprints in the West Seattle bbox, each carrying a parcel `PIN`, so identity is a key join, not spatial matching), King County parcels (22,359 in bbox) + KC address points, CMS Care Compare (facility-level only), CDC SVI block groups. **Rural fallback tier: Microsoft GlobalMLBuildingFootprints** (1.4B ML-derived polygons, geometry only, no addresses) for counties without a GIS department, which is the real customer. Owner names dropped at ingest: the KC assessor join can surface them, so A4 names the exact columns to drop. Friday: page both ArcGIS REST endpoints to GeoJSON (~25 pages each), resident before the internet goes away |
+| A3 | Damage grading | Split by what the weights actually take (verified in the ensemble code: cls models concat pre+post into 6 channels): **xView2 loc** for outlines, single-image, always on; **VL grading** (Nano 12B v2 VL, guided 0-3 per crop) as primary grader; **xView2 cls** as a second grader where pre-event imagery covers the tile, which Bay County supplies for real (see section 9). Never feed post as fake pre - "no change" reads as "no damage". All behind one `grade()` signature, active path named in the status bar |
+| A4 | Data joins | AOIs, sources and live-queried counts are in **section 9**. Two schemas, two loaders: Pinellas (39,166 parcels with `SITE_ADDRESS`, plus the live gray-sky road-closure service that feeds B4) and Bay County (24,187 parcels, 32,670 address points, 4,105 roads, plus a real pre/post aerial pair). Footprints come from Sarasota's `BuildingFootprint` layer or **Microsoft GlobalMLBuildingFootprints** where a county has none, which is most counties. CMS Care Compare and CDC SVI are national so they work for any AOI. **Owner-identity columns are dropped in the loader, and the field names differ per county**, so `DROP_COLUMNS` is per-schema and `dropped_columns_seen()` reports the measured subset; section 9 lists the exact fields. Property-value columns are loaded and then visibly refused, because a promise that value never enters life-safety ranking is only checkable if the data was there to ignore |
 | A5 | Gate eval | Person-recall on 100 held-out **real aerial** tiles measured **through the tiled path**, not a single downscaled pass. The confidence threshold is then set FROM that measurement (drop below 0.25 if recall demands it: a false withhold costs an operator one review click, a false clear costs the whole privacy claim). Number published in the README |
 | A6 | Archive indexer, the only privacy enforcement point | For gate-cleared images only: VL caption and grade come from **one pass** (never call the VLM twice per crop), Lightning batch tag extraction, normalized embedding, all written to SQLite. Withheld images are never indexed: enforce it **in the writer**, so it holds for the add-image button and the metadata-edit path too. **BGE runs on CPU**, pinned: with three vLLM pools resident the GPU allocator is full and it OOMs (verified). Caption post-filter re-withholds any caption mentioning a person, body or clothing |
 | A7 | Geo fallback chain | GeoTIFF transform, then EXIF GPS, then sidecar, then `needs_geo` for operator drag-to-place. Never silently drop an image |
@@ -380,8 +380,135 @@ Seven techniques that earned their place on the design spike. Use them verbatim.
 7. **Reseed script from hour one.** One command returns the box to pristine demo state. You will run it fifty times.
 
 ---
+## 9. Demo data: real disasters over real counties
 
-## 9. Weekend timeline
+Every source below was queried live and the numbers are what came back. Nothing
+here needs an account or a key.
+
+### Imagery: NOAA Emergency Response Imagery
+
+[storms.ngs.noaa.gov](https://storms.ngs.noaa.gov/) publishes post-disaster
+aerial imagery for **52 events** back to Hurricane Isabel in 2003, as
+georeferenced GeoTIFFs in a public S3 bucket. Verified on the box: a Helene tile
+opened at **14122 x 14122 px, 4 bands, EPSG:4326**, with a real transform, which
+means the A7 geo chain resolves on its FIRST link instead of falling back.
+
+S3 has no directories, so a trailing-slash path returns NoSuchKey. List with a
+query, fetch by exact key:
+
+```
+list flight days:  https://noaa-eri-pds.s3.amazonaws.com/?list-type=2&prefix=2024_Hurricane_Helene/&delimiter=/
+list one day:      https://noaa-eri-pds.s3.amazonaws.com/?list-type=2&prefix=2024_Hurricane_Helene/20240927a_RGB/
+one tile (6.8 MB): https://noaa-eri-pds.s3.amazonaws.com/2024_Hurricane_Helene/20240927a_RGB/20240927aC0850215w293645n.tif
+```
+
+Tiles run 7 MB to 900 MB, so cherry-pick small ones. Interactive picker, click a
+footprint to get its download link:
+[Helene](https://storms.ngs.noaa.gov/storms/helene/index.html) ·
+[Milton](https://storms.ngs.noaa.gov/storms/milton/index.html) ·
+[Michael](https://storms.ngs.noaa.gov/storms/michael/index.html) ·
+[Ian](https://storms.ngs.noaa.gov/storms/ian/index.html)
+
+### The two AOIs, and why these two
+
+**Primary: Pinellas County, Florida (Hurricane Milton, 2024).** ~960,000 people,
+a real EOC, and one of the richest county GIS operations in the US: **48 service
+folders** at
+[egis.pinellas.gov](https://egis.pinellas.gov/gis/rest/services?f=json).
+
+| Layer | Verified | Why it earns its place |
+|---|---|---|
+| [`RoadClosures/GraySkyRoadClosures_Public`](https://egis.pinellas.gov/gis/rest/services/RoadClosures/GraySkyRoadClosures_Public/MapServer?f=json) | 12 layers: Closures, Flooding, Tidal Flooding, Downed Tree, **Downed Power Lines**, Downed Traffic Signal, Barricade | B4's blocked roads as REAL county data. "Gray sky" is EOC jargon for during-the-event operations, and no other candidate county publishes anything like it |
+| [`WebGIS/Parcels`](https://egis.pinellas.gov/gis/rest/services/WebGIS/Parcels/MapServer?f=json) | **39,166** parcels in one Milton-hit bbox, 45 fields | `SITE_ADDRESS`, `SITE_CITY`, `SITE_ZIP`, `USE_CODE`, `FIRE_DISTRICT`, `Acres` |
+| [`PublicWebGIS/General`](https://egis.pinellas.gov/gis/rest/services/PublicWebGIS/General/MapServer?f=json) | Fire 5, Hospitals 3 in one bbox, plus Police, Schools, Libraries | county-published facilities, not a national roll-up |
+| [`Aerials/`](https://egis.pinellas.gov/gis/rest/services/Aerials?f=json) | 14+ vintages | pre-event chips |
+| [`EMA/EvacuationZones`](https://egis.pinellas.gov/gis/rest/services/EMA/EvacuationZones/MapServer?f=json) | parcel-level evacuation depth | vulnerability beyond SVI |
+| [`Geocoding/PinellasComposite`](https://egis.pinellas.gov/gis/rest/services/Geocoding?f=json) | county address locator | identity join |
+| Gap | no building-footprint service found | join Microsoft footprints to parcels, which is the fallback tier doing real work |
+
+**Secondary: Bay County, Florida (Hurricane Michael, 2018), Panama City.**
+~175,000 people, a Cat 5 landfall, and an actual `EOC` GIS folder at
+[gis.baycountyfl.gov](https://gis.baycountyfl.gov/arcgis/rest/services?f=json).
+
+The decisive asset is a **true pre/post aerial pair from one authoritative
+source**, same county, same tile scheme, same projection:
+
+| Layer | Verified |
+|---|---|
+| [`Aerials/Aerials2018NOAAMichael`](https://gis.baycountyfl.gov/arcgis/rest/services/Aerials/Aerials2018NOAAMichael/MapServer?f=json) | z18 tile returns **200, 16 KB, JPEG**. The county publishes the hurricane imagery itself |
+| [`Aerials/Aerials2016`](https://gis.baycountyfl.gov/arcgis/rest/services/Aerials/Aerials2016/MapServer?f=json) | z18 tile returns **200, 19 KB, JPEG**, two years before the storm |
+| [`BayView`](https://gis.baycountyfl.gov/arcgis/rest/services/BayView/BayView/MapServer?f=json) | Parcels **24,187**, Addresses **32,670**, Roads **4,105** in the Panama City bbox, plus FEMA flood zones and hydrants |
+| [`EOC`](https://gis.baycountyfl.gov/arcgis/rest/services/EOC?f=json) | storm-surge depth studies for hurricane categories 1 through 5 |
+| Also | `Aerials2020NOAASally`, a second hurricane over the same county, and vintages back to 1999 |
+
+**That pair unblocks the xView2 cls path.** Its classification models take a
+six-channel pre+post concatenation, verified in the ensemble's own code, so
+without pre-event imagery they cannot run at all. Bay County is the only
+candidate that supplies both halves from one source, over real buildings, which
+turns "cls runs where pre-imagery exists" from a caveat into a demonstrated path.
+
+**Backup footprints: Sarasota County, Florida (Milton).** 208 hosted services at
+[ags3.scgov.net](https://ags3.scgov.net/server/rest/services/Hosted?f=json),
+including [`BuildingFootprint`](https://ags3.scgov.net/server/rest/services/Hosted/BuildingFootprint/FeatureServer/0?f=json)
+(**34,620** polygons in a Sarasota-city bbox, the layer Pinellas lacks) and
+[`AddressPoint`](https://ags3.scgov.net/server/rest/services/Hosted/AddressPoint/FeatureServer/0?f=json)
+(**54,174** points with `addnumber`, `streetname`, `bldgname`, `landmarkname`).
+Footprint identity comes from a spatial join to the address points rather than a
+carried parcel key, one step more than a PIN join but reliable at that density.
+Notably the footprint schema carries no owner fields at all, so that layer is
+privacy-clean by construction.
+
+### Why not West Seattle
+
+It was inherited from the pre-event design spike and it does not survive scrutiny.
+Seattle has no disaster imagery and never will in the imagery era, because its
+catastrophic hazard is a Cascadia earthquake, so damage would always have to be
+borrowed from somewhere else. It also contradicts the pitch: the FCC tower figure
+is about Helene, and the customer this box is built for is a county with drones
+and no cloud, not a dense affluent neighborhood inside a county with a
+professional GIS department. `config.AOI` is an env var, so the AOI is a
+configuration choice, not a rewrite.
+
+### Privacy: the exact columns we drop, per county schema
+
+Owner identity is dropped at ingest, in the loader, before anything downstream can
+read it. The schemas differ by county and a tuple written for one **will not catch
+another**, which is why `DROP_COLUMNS` is per-schema and `dropped_columns_seen()`
+reports the subset actually encountered so the write-up quotes a measured number:
+
+| County | Owner fields present | Value fields present |
+|---|---|---|
+| Pinellas | `OWNER1`, `OWNER2`, `MAILTO`, `OWNADD_1`, `OWNADD_2`, `OWNCITY`, `OWNSTATE`, `OWNCOUNTRY`, `OWNZIP` | `TAXABLE_VALUE`, `LAND_VALUE`, `IMP_VALUE`, `SALEPRICE1`, `SALEPRICE2` |
+| Bay | `A2OWNAME` | `DTAXACRES` |
+| King (Seattle) | `OWNER`, `OWNER_NAME`, `TAXPAYER`, mailing-address variants | assessor value fields |
+
+The value columns are worth loading and then visibly refusing: the plan promises
+property value never enters life-safety ranking, and a judge can only check that
+claim if the data was there to ignore.
+
+### Labelled sets, for the numbers we owe
+
+| Dataset | The number it produces | Link |
+|---|---|---|
+| **VisDrone** | **A5 gate recall.** 8,629 annotated aerial images including pedestrians and people, which is what a person-detection recall figure has to be measured on | [github.com/VisDrone/VisDrone-Dataset](https://github.com/VisDrone/VisDrone-Dataset) |
+| **RescueNet** | **B8-c2 VL grading accuracy.** 4,494 UAV images from Hurricane Michael with pixel labels for 11 classes including damaged and undamaged buildings, water and vehicles | [BinaLab repo](https://github.com/BinaLab/RescueNet-A-High-Resolution-Post-Disaster-UAV-Dataset-for-Semantic-Segmentation) · [paper](https://pmc.ncbi.nlm.nih.gov/articles/PMC10733412/) |
+| **xView2 / xBD** | The only source of pre+post PAIRS with published F1, for the cls path | [xview2.org](https://xview2.org/) |
+| **SARD** | Harder person cases: search-and-rescue poses, prone and partly occluded | [Kaggle](https://www.kaggle.com/datasets/nikolasgegenava/sard-search-and-rescue) |
+| **CMS Care Compare** | Nursing homes and clinics, national, so it works for any county | [data.cms.gov](https://data.cms.gov/provider-data/topics/nursing-homes) |
+| **CDC SVI** | Block-group vulnerability, national | [atsdr.cdc.gov](https://www.atsdr.cdc.gov/place-health/php/svi/index.html) |
+| **Microsoft GlobalMLBuildingFootprints** | Footprints where a county has none, which is most counties | [github.com/microsoft/GlobalMLBuildingFootprints](https://github.com/microsoft/GlobalMLBuildingFootprints) |
+
+**One finding that changes the demo kit.** The synthetic person fixture in
+`make_demo_kit.py` does NOT trigger real detector weights: drawn figures, tested
+at two scales on the box, produced zero detections, which is correct behaviour
+from the detector and a defect in the fixture. The live storage-denial beat and
+the published A5 recall number both require **real aerial frames with real people
+in them**, which is exactly what VisDrone and SARD are for.
+
+---
+
+
+## 10. Weekend timeline
 
 | When | Member A | Member B | Member C |
 |---|---|---|---|
@@ -413,7 +540,7 @@ Seven techniques that earned their place on the design spike. Use them verbatim.
 
 ---
 
-## 10. Risks, each with a pre-decided answer
+## 11. Risks, each with a pre-decided answer
 
 | Risk | Answer |
 |---|---|
@@ -427,7 +554,7 @@ Seven techniques that earned their place on the design spike. Use them verbatim.
 
 ---
 
-## 11. Definition of done - nine gates
+## 12. Definition of done - nine gates
 
 Run all nine Sunday afternoon. Any red light means we are not finished.
 
@@ -445,7 +572,7 @@ Run all nine Sunday afternoon. Any red light means we are not finished.
 
 ---
 
-## 12. The three-minute demo
+## 13. The three-minute demo
 
 | Time | Beat | On screen |
 |---|---|---|

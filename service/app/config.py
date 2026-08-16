@@ -59,10 +59,25 @@ XVIEW2_WEIGHTS = Path(
 REVIEW_TOKEN = os.environ.get("FIRSTLIGHT_REVIEW_TOKEN", "")
 
 # ---------------------------------------------------------------- AOI
-# West Seattle demo area of operations, [w, s, e, n].
-AOI = [
-    float(x)
-    for x in os.environ.get("FIRSTLIGHT_AOI", "-122.42,47.52,-122.36,47.58").split(",")
-]
+# Area of operations, [w, s, e, n]. See README section 9 for why these counties.
+#
+# Default is Pinellas County FL over ground Hurricane Milton actually crossed:
+# the county publishes a live gray-sky road-closure service, which is the only
+# real blocked-roads feed any candidate county had.
+#
+# Named alternatives, switch with FIRSTLIGHT_AOI:
+#   Bay County FL (Michael 2018, Panama City): -85.72,30.13,-85.62,30.22
+#     the one AOI with a true pre/post aerial pair from one source, so the
+#     xView2 cls path can actually run on six-channel input.
+#   Sarasota FL (Milton 2024):                 -82.56,27.30,-82.48,27.38
+#     34,620 county building footprints, where Pinellas has none.
+AOI_PRESETS = {
+    "pinellas": [-82.78, 27.75, -82.70, 27.82],
+    "bay": [-85.72, 30.13, -85.62, 30.22],
+    "sarasota": [-82.56, 27.30, -82.48, 27.38],
+}
+_aoi = os.environ.get("FIRSTLIGHT_AOI", "pinellas")
+AOI = AOI_PRESETS.get(_aoi.strip().lower()) or [float(x) for x in _aoi.split(",")]
+AOI_NAME = _aoi if _aoi in AOI_PRESETS else "custom"
 
 STALENESS_CAP_H = 12.0
