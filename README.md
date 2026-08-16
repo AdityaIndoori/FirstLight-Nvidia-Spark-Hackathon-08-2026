@@ -24,6 +24,25 @@ Two things make it a winner rather than a dashboard:
 
 > **Rules check, first 30 minutes.** We prototyped this concept before the event to de-risk the design. Confirm the event's fresh-code rules at check-in, write all submission code during the event, and disclose the earlier spike wherever the rules ask. The design is proven; the build is the weekend's work. Nobody claims otherwise on stage.
 
+## Status — Friday night, all measured on the box (`gn100-2714`)
+
+The box is provisioned and the model layer is proven. All submission code is written during the event; the numbers below are infrastructure, measured tonight.
+
+| What | State | Evidence |
+|---|---|---|
+| Nemotron Nano 9B v2 FP8 | **serving** vLLM :8000 | 24 tok/s single-stream, warm; triage + ICS-213 prompts answering |
+| Nemotron 3.5 Lightning NVFP4 | **serving** vLLM :8001 | 52/52 shards verified; k=8 guided ballot in 848 ms; batch tags in 403 ms |
+| Nemotron Nano 12B v2 VL FP8 | **serving** vLLM :8002 | constrained caption in 7.0 s; grades from pixels |
+| Triple co-residency | **proven** | Nano 0.25 + Lightning 0.35 + VL 0.22 utilization splits, ~98 GB observed, zero swap |
+| Lightning DSpark drafter | staged (1.3 GB) | NVIDIA's published spec-decode checkpoint for Lightning; before/after measured Saturday |
+| VisDrone YOLOv8x privacy gate | **tested** | dense-crowd aerial fixture: 22 person detections, WITHHELD in 89 ms; vehicles correctly do not trigger |
+| xView2 first-place weights | extracted (24 checkpoints, 5.3 GB) | loc = single-image (usable as-is); cls = pre+post 6-channel (verified in code) |
+| BGE-small embedder | **tested** (CPU) | "buildings on fire" ranks fire-damage captions top; milliseconds per query |
+| County GIS for the demo AOI | **verified reachable** | Seattle Building Outlines 2023: 27,250 footprints w/ parcel PIN; KC parcels: 22,359; queried live against both ArcGIS endpoints |
+| vLLM API facts for this build | documented | `guided_choice` works; top-level `guided_json` silently ignored — use `response_format: json_schema`; Lightning ignores `/no_think` (Nano syntax), structured decoding tames it |
+
+Not built yet, by plan: NemoClaw + OpenShell containment (B5), the wired pipeline, the operator console. That is the weekend's work.
+
 ---
 
 ## 2. Judge criteria, answered before we write a line
@@ -51,7 +70,8 @@ Two things make it a winner rather than a dashboard:
 ```mermaid
 flowchart LR
     DL[Drone downlink<br/>streamed frames + SD card fallback] --> GATE[Privacy gate<br/>person detector<br/>withhold by default]
-    GATE -->|clear tiles only| SEG[Damage grading<br/>xView2 seg baseline<br/>RescueNet 4 levels]
+    GATE -->|clear tiles only| LOC[Building outlines<br/>xView2 loc ensemble<br/>single-image, works as-is]
+    LOC --> SEG[Damage grading<br/>Nemotron Nano 12B v2 VL primary<br/>xView2 cls when pre-imagery exists]
     GATE -->|withheld| REVIEW[Restricted review queue]
     SEG --> JOIN[Vulnerability join<br/>footprints + CMS + SVI + roads]
     JOIN --> SCORE[Priority scorer<br/>staleness x vulnerability x doubt<br/>append only decision log]
@@ -78,16 +98,17 @@ The Spark is 128 GB unified memory at **273 GB/s**. Bandwidth is the real constr
 
 | Component | Footprint | Note |
 |---|---|---|
-| Nemotron Nano 9B v2, FP8 | ~12 GB | Mamba-hybrid, only 4 attention layers, so the KV cache is unusually small |
-| Nemotron 3.5 Lightning, 4-bit (NVFP4-class) weights | ~17 GB | Use whichever quantized build NVIDIA publishes for this box; confirm the exact name at check-in before saying it on stage |
-| Damage seg + person detector | ~3 GB | |
-| Caption VLM (small vision-language model, FP8) | ~8 GB | Writes the archive caption at stage 3. A text model cannot caption an image; this is why the roster is six models, not four |
-| Text embedder (BGE-small class, 384-dim) | ~1 GB | Embeds captions and queries for semantic search |
+| Nemotron Nano 9B v2 FP8 (`nvidia/NVIDIA-Nemotron-Nano-9B-v2-FP8`) | 9.6 GB measured | Mamba-hybrid, only 4 attention layers, so the KV cache is unusually small |
+| Nemotron 3.5 Lightning NVFP4 (`nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4`) | 21 GB measured | 52 safetensors shards verified on the box — the plan's ~17 GB estimate was low; table updated to match the gauge |
+| Lightning DSpark drafter (`...-NVFP4-DSpark`) | 1.3 GB measured | NVIDIA's published speculative-decoding checkpoint for Lightning — the drafter the plan hoped for shipped |
+| xView2 loc+cls ensembles + VisDrone person detector | ~5.5 GB measured | 24 checkpoints extracted; detector is VisDrone-trained YOLOv8x, not COCO |
+| Caption + grading VLM: Nemotron Nano 12B v2 VL FP8 | 15 GB measured | Grades buildings AND writes archive captions — the same NVIDIA RAG blueprint captioner role. A text model cannot see an image |
+| Text embedder BGE-small-en-v1.5, 384-dim | 0.4 GB measured | Runs on CPU: with three vLLM pools resident the GPU allocator is full, and 8 captions embed in milliseconds anyway |
 | County GIS, map tiles, SQLite, archive vectors | ~20 GB | A few thousand 384-dim vectors is under 10 MB — the tiles dominate |
-| KV pools, both LLM servers | ~48 GB | vLLM pre-allocates to fill its utilization fraction |
-| **Reserved total** | **~109 GB of 128 GB** | Zero swap, everything warm, ~19 GB free |
+| KV pools, three vLLM servers | ~45 GB | vLLM pre-allocates to fill its utilization fraction |
+| **Reserved total** | **~98 GB observed of 128 GB** | Triple co-residency proven on the box: Nano 0.25 + Lightning 0.35 + VL 0.22, all warm, zero swap |
 
-**Do the arithmetic the way the gauge will.** vLLM does not reserve only the weights; it pre-allocates a KV pool to fill its `--gpu-memory-utilization` fraction. We set Nano to 0.25 (~32 GB total allocation: 12 weights + 20 KV) and Lightning to 0.35 (~45 GB total: 17 weights + 28 KV) — never the ~0.9 default, which would collide on the first request. Add it up: 12 + 17 + 3 + 8 + 1 + 20 + 48 = **~109 GB reserved, ~19 GB free**, and that is exactly what the HUD gauge shows. Bring a calculator; the slide and the gauge agree. Want a smaller number? Cap `--max-model-len` and shrink the fractions — then update this table in the same commit. The rule is that the table and the gauge never disagree. Shared 273 GB/s bandwidth is why every latency number is measured with **both** models warm — a single-model benchmark on this box is a lie by omission.
+**Do the arithmetic the way the gauge will.** vLLM does not reserve only the weights; it pre-allocates a KV pool to fill its `--gpu-memory-utilization` fraction. Measured splits on this box: Nano at 0.25, Lightning at 0.35, VL captioner at 0.22 — never the ~0.9 default, which would collide on the first request. (VL at 0.15 fails with "no available memory for cache blocks"; 0.22 is the working floor at 8K context.) The observed gauge with all three servers warm plus the in-process detector and embedder: **~98 GB used, ~30 GB free.** The rule is that the table and the gauge never disagree — this table already reflects the box, not estimates. Shared 273 GB/s bandwidth is why every latency number is measured with **all** models warm — a single-model benchmark on this box is a lie by omission.
 
 **Latency targets (so "blows its budget" has a threshold):** replan p95 **under 3 s** with both models warm, per-tile end-to-end under 10 s, hard stub timeout at 10 s.
 
@@ -97,25 +118,28 @@ The Spark is 128 GB unified memory at **273 GB/s**. Bandwidth is the real constr
 
 | Model | Job | Why this model | Bounty |
 |---|---|---|---|
-| **Nemotron Nano 9B v2** (FP8, vLLM) | Decision-maker: flight tasking with reasoning **visibly on** (thinking trace streams during the replan beat), the one hero rationale, ICS-213 drafting. Cheap structured calls use `/no_think`. | We chose a reasoning model, so we show it reasoning once, where it matters, inside the demo beat | Best Use of Nemotron |
-| **Nemotron 3.5 Lightning** (4-bit weights, vLLM) | The job only its throughput unlocks: **k=8 self-consistency voting that computes the `doubt` term** (see the ballot below), plus batch rationales for ranks 2-50, **archive tag extraction across the whole corpus**, and FEMA PDA row fill. Speed buys *calibrated uncertainty* the slow model cannot afford at demo tempo. | 3B active of 30B MoE with multi-token prediction and speculative decoding. We configure it and measure the delta on this box. | Best Use of Nemotron Lightning |
-| xView2 first-place seg | Building damage classes | Public weights, RescueNet taxonomy. **Baseline must work**; the RescueNet fine-tune is a Saturday stretch goal behind the same interface, never on the critical path | — |
-| Person detector (YOLO class 0) | Privacy gate, before anything else reads a tile | Fast, conservative, and its recall is measurable | — |
-| Caption VLM (small, FP8) | Writes one factual caption per **cleared** image at stage 3, constrained to structures, terrain and water | A text LLM cannot see an image. This is the only vision-language model in the stack and it is small on purpose | — |
-| Text embedder (BGE-small class) | Embeds captions and search queries, 384-dim, normalized | Search must work offline with no service. 1 GB buys the whole semantic surface | — |
+| **Nemotron Nano 9B v2** (`nvidia/NVIDIA-Nemotron-Nano-9B-v2-FP8`, vLLM :8000, **serving**) | Decision-maker: flight tasking with reasoning **visibly on** (thinking trace streams during the replan beat), the one hero rationale, ICS-213 drafting. Cheap structured calls use `/no_think`. | We chose a reasoning model, so we show it reasoning once, where it matters, inside the demo beat. Measured on the box: 24 tok/s single-stream, warm | Best Use of Nemotron |
+| **Nemotron 3.5 Lightning** (`...-30B-A3B-NVFP4`, vLLM :8001, **serving**) | The job only its throughput unlocks: **k=8 self-consistency voting that computes the `doubt` term** (see the ballot below), plus batch rationales for ranks 2-50, **archive tag extraction across the whole corpus**, and FEMA PDA row fill. Speed buys *calibrated uncertainty* the slow model cannot afford at demo tempo. **Text-only by design** (`NemotronHForCausalLM`, no vision config — verified): it never sees pixels, it cross-examines the models that do. | 3B active of 30B MoE with multi-token prediction. NVIDIA's published **DSpark drafter** (1.3 GB) is on the box for speculative decoding; we measure the delta. Measured: k=8 ballot in 848 ms, batch tag extraction in 403 ms | Best Use of Nemotron Lightning |
+| **Nemotron Nano 12B v2 VL** (FP8, vLLM :8002, **serving**) | Two jobs, one pass per cleared image: **primary damage grader** (0-3 via guided choice, per building crop — it is the only post-gate model that sees pixels) and **archive captioner** (factual, constrained to structures/terrain/water). Same model NVIDIA's RAG blueprint ships as its ingestion captioner. | xView2's cls ensemble needs pre-disaster image pairs (verified in its code: 6-channel pre+post concat) — where pre-imagery exists it runs as a second grader; where it does not, VL grading is the primary, disclosed in the status bar. Measured: caption in 7.0 s | — |
+| xView2 first-place ensemble (24 checkpoints on box) | **loc** models: building outlines from a single post image — work as-is, run always. **cls** models: pre+post damage grading — run only when cached pre-event basemap chips cover the tile | Public challenge weights with a published score. Never fake the pre image by duplicating post — the model reads "no change" as "no damage", the worst bias a triage tool can have | — |
+| Person detector (**VisDrone-trained YOLOv8x**, in-process) | Privacy gate, before anything else reads a tile. VisDrone training = people at aerial scale, where COCO-trained detectors go blind | Fast, conservative (0.25 threshold, person classes only, withhold-on-error), and its recall is measurable. Weekend hardening: SAHI-style tiled inference for full-resolution tiles | — |
+| Text embedder (BGE-small-en-v1.5, in-process, CPU) | Embeds captions and search queries, 384-dim, normalized | Search must work offline with no service. 0.4 GB buys the whole semantic surface; CPU is milliseconds at this scale | — |
 | **NemoClaw + OpenShell** | The planner runs as a NemoClaw agent inside the OpenShell sandbox. Policy: deny all egress, filesystem scoped to `./data`, localhost inference only, rules at binary and destination level, scrollable audit feed in the UI | Out-of-process enforcement the agent cannot override, and we prove it live | NemoClaw + OpenShell |
 
 ### The Lightning ballot — what exactly is voted, and why it changes the ranking
 
-The seg model owns the *initial* damage class. Lightning owns the *confidence in it*, and that is what feeds the priority formula.
+The grader (VL, or xView2-cls where pre-imagery exists) owns the *initial* damage class. Lightning owns the *confidence in it*, and that is what feeds the priority formula. Lightning is text-only — that is the design, not a limitation: it cross-examines **two independently generated accounts from the model that does see the image** (the structured grade and the free-text caption are separate generations), plus the join context. When the accounts contradict — grade says minor, caption says roof collapsed — the votes scatter and doubt rises for exactly the right reason.
 
 | Step | Detail |
 |---|---|
-| Input per building | seg class + seg confidence + join context (footprint area, facility proximity, neighbour classes) |
-| Ballot | Lightning samples the severity label **k=8 times at temperature 0.7**, structured-decoded to a single integer 0-3 |
+| Input per building | grader class + confidence + **VL caption** + join context (footprint area, facility proximity, neighbour classes) |
+| Ballot | Lightning samples the severity label **k=8 times at temperature 0.7**, structured-decoded to a single integer 0-3 (vLLM `guided_choice` — verified working on this box; note `guided_json` as a top-level param is silently ignored on this build, use `response_format: json_schema`) |
 | Output | `voted_class` = the modal label; `vote_agreement` = modal count / 8 |
 | Wired into the rank | `doubt = 1 - vote_agreement`, floored at 0.05. So a building the fast model cannot agree with itself about **rises in the ranking**, which is exactly the behaviour we want: uncertainty means send someone to look |
-| Eval, two distinct numbers | **Self-agreement**: mean `vote_agreement` across the 50 buildings (how sure Lightning is of itself). **Cross-model agreement**: how often Lightning's `voted_class` matches Nano's single-shot label on the same 50. Both published at gate 9 |
+| Measured Friday | k=8 ballot: **848 ms** for 8 parallel guided generations, both other servers warm |
+| Eval, two distinct numbers | **Self-agreement**: mean `vote_agreement` across the 50 buildings (how sure Lightning is of itself). **Cross-model agreement**: how often Lightning's `voted_class` matches the grader's label on the same 50. Both published at gate 9 |
+
+**The judge question this answers:** "why two models instead of one accurate one?" Because no single highly-accurate model exists for aerial damage grading — the xView2 challenge winners top out in the high-70s F1, and major-vs-minor confusion from above is irreducible. Given that ceiling, the product is not the grade; it is the calibrated list of which grades to re-check first. One model gives an answer you cannot interrogate; our witnesses disagree in public, and the disagreement is what tells the Ops Chief where to send the next human.
 
 This is why the throughput matters and is impossible to hand-wave: 50 buildings × 8 samples = 400 structured generations inside a demo beat. Nano cannot do that and still stream a thinking trace. The speedup is not a vanity metric; it is the thing that produces the uncertainty column.
 
@@ -255,8 +279,8 @@ Each member pairs with an AI coding agent. Section 8 is the technique; Appendix 
 |---|---|---|
 | A1 | Streaming ingest | Receive frames over **RTSP** (frozen choice — the defensible "real downlink" story) plus watch-folder and SD-card fallback; content-hash dedup; emit per-tile end-to-end latency |
 | A2 | Privacy gate | Person detection **before any other component reads the tile**; withhold to a restricted queue; detector error also withholds; fixture test proves a person tile never appears in any API response except the authorized review endpoint |
-| A3 | Damage grading | xView2 baseline that must work; RescueNet fine-tune only as a stretch goal behind the same function signature |
-| A4 | Data joins | Building footprints, CMS Care Compare facilities (facility-level only), CDC SVI block groups, county parcels with owner names dropped at ingest |
+| A3 | Damage grading | Split by what the weights actually take (verified in the ensemble code: cls models concat pre+post into 6 channels): **xView2 loc** for outlines, single-image, always on; **VL grading** (Nano 12B v2 VL, guided 0-3 per crop) as primary grader; **xView2 cls** as a second grader only where cached pre-event basemap chips cover the tile. Never feed post as fake pre — "no change" reads as "no damage". All behind one `grade()` signature, active path named in the status bar |
+| A4 | Data joins | **Verified available for the demo AOI (queried live)**: Seattle Building Outlines 2023 (27,250 footprints in the West Seattle bbox, each carrying a parcel `PIN` — identity is a key join, not spatial matching), King County parcels (22,359 in bbox) + KC address points, CMS Care Compare (facility-level only), CDC SVI block groups. Owner names dropped at ingest — the KC assessor join can surface them, so A4 names the columns to drop. Friday: page both ArcGIS REST endpoints to GeoJSON (~25 pages each), resident before the internet goes away |
 | A5 | Gate eval | Person-recall on 100 held-out tiles, number published in the README |
 | A6 | Archive indexer | For cleared images only: local vision caption, tag extraction, normalized embedding, all written to SQLite. Withheld images are never indexed — enforce it in the writer, not by convention |
 | A7 | Geo fallback chain | GeoTIFF transform, then EXIF GPS, then sidecar, then `needs_geo` for operator drag-to-place. Never silently drop an image |
@@ -318,7 +342,7 @@ Copy these into every AI prompt. If a field is missing here, add it here first, 
 
 **Field semantics, so nobody invents them:**
 
-- `graded_by` — `"xview2"` until an operator flips it, then `"operator:<name>"`. Lightning never grades the class; it owns the `doubt` term only.
+- `graded_by` — `"nemotron-vl"` (or `"xview2"` where pre-imagery enabled the cls path) until an operator flips it, then `"operator:<name>"`. Lightning never grades the class; it owns the `doubt` term only.
 - `road_cutoff` — a multiplier **>= 1** that *raises* priority for buildings cut off by a blocked road; `null` when access is clear.
 - `facility_near.type` — one of `nursing_home`, `dialysis`, `hospital`. Those three get the medical-cross marker.
 - `captured_at` — epoch seconds, float.
@@ -349,7 +373,7 @@ Seven techniques that earned their place on the design spike. Use them verbatim.
 | When | Member A | Member B | Member C |
 |---|---|---|---|
 | Fri, first hour | Rules check together, then contracts frozen (section 7) | — | — |
-| Fri evening | Download every weight, dataset and map tile — last internet! | Both vLLM instances up; verify Nano + Lightning co-residency; configure speculative decoding; capture baseline numbers | Repo scaffold, offline tile cache, static UI shell |
+| Fri evening | Download every weight, dataset and map tile — last internet! **Done ahead of schedule: all 7 model artifacts verified on the box (shard-counted, not just exit codes)** | All three vLLM servers up; **triple co-residency verified: Nano 0.25 + Lightning 0.35 + VL 0.22, ~98 GB, zero swap**; ballot 848 ms, tags 403 ms, caption 7.0 s measured; configure speculative decoding (DSpark drafter staged); capture baseline numbers | Repo scaffold, offline tile cache, static UI shell |
 | Sat morning | Streaming ingest + privacy gate + fixture test | Scorer + decision log + first Nano rationale | Map painting against a stub API |
 | Sat afternoon | Seg inference wired; data joins; **archive captions + embeddings** | Flight tasking with guided JSON; Lightning k=8 sweep; **agency plan builder** | Upload + stage tracker; **agency plan panel** |
 | Sat evening | Gate recall eval; geo fallback chain; caption + tag pipeline running | Routing with blocked roads; **archive search resolvers**; OpenShell policy + all beats | **Archive panel** and the aid package. Flight-path *display* only; Navigate and print |
@@ -382,7 +406,7 @@ Seven techniques that earned their place on the design spike. Use them verbatim.
 |---|---|
 | Both models will not fit or contend for bandwidth | Measured Friday night with explicit utilization splits. If tight, Lightning stays (it is the bounty centrepiece) and Nano drops to 4-bit. We never discover this on Sunday. |
 | Replan blows its latency budget | Token cap plus prefill cap already sized; p95 measured with both models warm; narration covers any gap; a hard 10 s timeout fires the stub, and the HUD says which happened |
-| xView2 weights misbehave on this imagery | Vision-model grading fallback behind the same interface, disclosed in the status bar |
+| xView2 cls needs pre-disaster pairs and the AOI has none | Already the design, not a discovery: VL grading is the primary path; cls is the bonus witness where pre-event basemap chips exist. Verified in the ensemble code Friday, not on stage |
 | OpenShell blocks our own vLLM sockets | Policy allows localhost:8000 and :8001 explicitly, tested Friday. If it still fights us, run inference inside the sandbox too |
 | A judge does something unexpected in the UI | Everything visible is safe to click; one-command reseed; recorded backup a keypress away |
 | The new archive/agency scope crowds out the core | Cut list items 1-2 exist for exactly this: the assistant goes first, then semantic search. Location and structured search need no model and stay. Gates 1-8 are the line we defend |
