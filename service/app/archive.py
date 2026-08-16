@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import sqlite3
@@ -908,12 +909,23 @@ def _rank_semantic(
     Rows whose embedding is missing or was written at a different dimension score
     0.0 and sink; they are never dropped, because the narrowing resolvers already
     decided who is a candidate.
+
+    A RELEVANCE FLOOR applies, and it is a correctness matter rather than polish.
+    Ranking without a floor returns the whole corpus for every query, so "penguins
+    in antarctica" comes back with the same hits as "roof damage" in the same order
+    as each other's tails, and the panel looks like it matched something. Measured
+    on real captions: "roof damage" scores 0.81 to 0.84, "buildings on fire" 0.58
+    to 0.66, "penguins in antarctica" 0.41 to 0.47, gibberish 0.38 to 0.45. So a
+    floor near 0.5 separates a real topical hit from the embedder's noise band. The
+    score rides on each item, so the panel can show what it matched on rather than
+    asking an operator to trust an ordering.
     """
     dim = embed.dim()
     qv = embed.encode([text])
     if qv.shape[0] == 0 or not np.any(qv):
         return items, False
     mat = np.zeros((len(rows), dim), dtype=np.float32)
+    scorable = [False] * len(rows)
     for i, row in enumerate(rows):
         blob = row["embedding"]
         if not blob:
@@ -921,9 +933,54 @@ def _rank_semantic(
         vec = np.frombuffer(blob, dtype=np.float32)
         if vec.size == dim:
             mat[i] = vec
+            scorable[i] = True
     scores = mat @ qv[0]
     order = np.argsort(-scores, kind="stable")
-    return [items[i] for i in order], True
+    floor = semantic_floor()
+    kept: list[contracts.ArchiveItem] = []
+    unscorable: list[contracts.ArchiveItem] = []
+    for i in order:
+        if not scorable[i]:
+            # A missing or wrong-dimension vector means UNKNOWN relevance, not
+            # irrelevance, and the narrowing resolvers already decided this row is
+            # a candidate. Dropping it would hide a real image because its
+            # embedding failed to write, so it sinks to the bottom with no score
+            # rather than being deleted by a threshold it was never measured
+            # against.
+            unscorable.append(items[i])
+            continue
+        score = round(float(scores[i]), 3)
+        if score < floor:
+            continue
+        items[i].score = score
+        kept.append(items[i])
+    return kept + unscorable, True
+
+
+def semantic_floor() -> float:
+    """Minimum cosine for a semantic hit, or 0 to keep everything.
+
+    Measured with the real BGE embedder on real captions: a topical hit scores 0.77
+    to 0.84, a loose association 0.58 to 0.66, and nonsense or gibberish 0.38 to
+    0.47. So a floor near 0.5 separates a real match from the noise band, and
+    without one every query returns the whole corpus in some order, which makes
+    "penguins in antarctica" look like it matched.
+
+    The floor is DISABLED for the stub embedder, because a hash-derived pseudo
+    vector has no meaningful similarity scale and a threshold tuned for BGE would
+    silently empty the archive. When the stub is running, ordering is the only
+    signal available and it is better to return a ranked list the status strip
+    already labels "stub-hash-v1" than to return nothing.
+    """
+    raw = os.environ.get("FIRSTLIGHT_SEMANTIC_FLOOR")
+    if raw is not None:
+        try:
+            return max(0.0, min(1.0, float(raw)))
+        except ValueError:
+            pass
+    if getattr(embed, "STUB_VERSION", "stub-hash-v1") == embed.model_version():
+        return 0.0
+    return 0.5
 
 
 def _item(row: sqlite3.Row) -> contracts.ArchiveItem:

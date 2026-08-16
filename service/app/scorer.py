@@ -8,6 +8,8 @@ wired), and the road-cutoff multiplier from operator-declared blockages.
 from __future__ import annotations
 
 import logging
+import math
+import os
 import time
 from typing import Optional
 
@@ -285,6 +287,51 @@ def _agency_route(agency: str, rows: list[dict]) -> Optional[dict]:
     return out
 
 
+def stop_spacing_m() -> float:
+    """Minimum metres between two dispatch stops for the same agency.
+
+    Below this the buildings are one assignment: a crew parks once and walks. The
+    default is a short block, and it is env-tunable because a dense downtown and a
+    rural highway disagree about what "adjacent" means.
+    """
+    raw = os.environ.get("FIRSTLIGHT_STOP_SPACING_M")
+    if raw is None:
+        return 120.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 120.0
+
+
+def _existing_stop_near(
+    rows: list[dict], centroid: list[float], spacing: float
+) -> Optional[dict]:
+    """The already-planned stop this building belongs to, or None for a new one."""
+    if spacing <= 0:
+        return None
+    for row in rows:
+        c = row.get("centroid") or []
+        if len(c) < 2:
+            continue
+        # Equirectangular is plenty at block scale and needs no dependency.
+        lat_scale = math.cos(math.radians((c[1] + centroid[1]) * 0.5))
+        dx = (centroid[0] - c[0]) * 111_320.0 * lat_scale
+        dy = (centroid[1] - c[1]) * 110_540.0
+        if math.hypot(dx, dy) <= spacing:
+            return row
+    return None
+
+
+def _short_label(label: str) -> str:
+    """Keep a re-labelled cluster readable instead of nesting 'N structures near
+    N structures near ...' on every absorb."""
+    text = str(label or "")
+    marker = " structures near "
+    if marker in text:
+        return text.split(marker, 1)[1]
+    return text
+
+
 def build_plan(
     limit: int = 12, drafted_by: str = "stub-rules-v1", *, per_agency: int = 5
 ) -> dict:
@@ -305,6 +352,7 @@ def build_plan(
     ranked = rank(limit=max(limit * 20, 200))["items"]
     steps: dict[str, list[dict]] = {a: [] for a in contracts.AGENCIES}
     cap = max(1, int(per_agency))
+    spacing = stop_spacing_m()
     for it in ranked:
         for agency, pred, task, units in AGENCY_RULES:
             try:
@@ -315,14 +363,30 @@ def build_plan(
             # One row, one agency: a building assigned twice is two crews sent to
             # the same door. First matching rule wins, which is why the rule order
             # encodes precedence.
-            if len(steps[agency]) < cap:
-                steps[agency].append(
+            rows = steps[agency]
+            near = _existing_stop_near(rows, it["centroid"], spacing)
+            if near is not None:
+                # Adjacent buildings are ONE assignment, not several. Five stops 11
+                # metres apart is a crew walking one block, and routing between them
+                # produces a fan of legs that drive out to the road and back, which
+                # reads on the map as a starburst rather than a route. Absorb the
+                # building into the stop that already covers it and say how many.
+                near.setdefault("footprint_ids", [near["footprint_id"]])
+                near["footprint_ids"].append(it["footprint_id"])
+                near["structures"] = len(near["footprint_ids"])
+                near["label"] = (
+                    f"{near['structures']} structures near {_short_label(near['label'])}"
+                )
+                break
+            if len(rows) < cap:
+                rows.append(
                     {
                         "footprint_id": it["footprint_id"],
                         "label": it["label"],
                         "centroid": it["centroid"],
                         "task": task,
                         "units": units,
+                        "structures": 1,
                     }
                 )
             break

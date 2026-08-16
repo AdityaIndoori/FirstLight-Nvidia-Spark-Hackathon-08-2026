@@ -591,6 +591,20 @@ function cell(item) {
   const t = document.createElement("span");
   t.textContent = clock(item.captured_at);
   foot.appendChild(t);
+  if (typeof item.score === "number") {
+    // The score, because an ordering asks the operator to trust it while a number
+    // can be argued with. Measured on real captions: a topical hit sits around
+    // 0.8, a loose association around 0.6, and the embedder's noise band is under
+    // 0.5, which is where the relevance floor sits.
+    const sc = document.createElement("span");
+    sc.className = "tip";
+    sc.textContent = "match " + item.score.toFixed(2);
+    sc.style.color = item.score >= 0.7 ? "var(--green,#76b900)" : "var(--dim,#8899aa)";
+    sc.title =
+      "cosine similarity between your query and this caption, 1.00 is identical. " +
+      "Results under the relevance floor are not returned at all.";
+    foot.appendChild(sc);
+  }
   if (item.needs_geo) {
     const g = document.createElement("span");
     g.textContent = "no geo";

@@ -190,6 +190,10 @@ class ArchiveItem:
     class_max: int
     key_evidence: bool = False
     footprint_ids: list[str] = field(default_factory=list)
+    # Cosine similarity to the query when the semantic resolver ranked this row,
+    # None otherwise. Shown in the panel so an operator sees WHY a result placed
+    # where it did rather than being asked to trust an ordering.
+    score: Optional[float] = None
 
     def wire(self) -> dict:
         return {
@@ -203,6 +207,7 @@ class ArchiveItem:
             "class_max": int(self.class_max),
             "key_evidence": bool(self.key_evidence),
             "footprint_ids": list(self.footprint_ids),
+            "score": self.score,
         }
 
 

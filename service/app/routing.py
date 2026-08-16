@@ -1003,9 +1003,16 @@ def _steps_for(
 
 # ---------------------------------------------------------------------- route
 def _fail(warning: str, geometry: Any = None, crosses: bool = False, avoided=None) -> dict:
+    """A failed Route with the SAME key set as a successful one.
+
+    A caller that has to check which keys exist before reading them will
+    eventually forget, so success and failure carry identical shapes and the `ok`
+    flag is the only thing that differs.
+    """
     return {
         "ok": False,
         "geometry": geometry,
+        "offroad": [],
         "steps": [],
         "distance_m": 0,
         "eta_min": 0.0,
@@ -1125,6 +1132,13 @@ def _leg(
     return {
         "ok": True,
         "geometry": geometry,
+        # The snap segments, published separately so a map can draw them as what
+        # they are. A driveway or parking aisle is usually absent from an OSM
+        # extract, so the last stretch to a building is a straight line off the
+        # road network. The turn-by-turn already says "leave the road network", but
+        # geometry drawn identically to routed road invites a crew to believe there
+        # is a road there. Each entry is [[lng,lat],[lng,lat]] with its metres.
+        "offroad": _offroad_segments(coords, src_m, dst_m),
         "steps": _steps_for(g, nodes, edges, src_m, lead_name, dst_m, arrive_text),
         "distance_m": int(round(total_m)),
         "eta_min": round(seconds / 60.0, 1),
@@ -1132,6 +1146,24 @@ def _leg(
         "blocked_roads_avoided": avoided,
         "warning": warning,
     }
+
+
+def _offroad_segments(
+    coords: list[list[float]], src_m: float, dst_m: float
+) -> list[dict]:
+    """The leading and trailing snap segments, when they are long enough to matter.
+
+    Below SNAP_NOTE_M the snap is shorter than a building and not worth drawing
+    differently; above it, a crew needs to know the last stretch is not a road.
+    """
+    out: list[dict] = []
+    if len(coords) < 2:
+        return out
+    if src_m >= SNAP_NOTE_M:
+        out.append({"coordinates": [coords[0], coords[1]], "metres": int(round(src_m)), "end": "start"})
+    if dst_m >= SNAP_NOTE_M:
+        out.append({"coordinates": [coords[-2], coords[-1]], "metres": int(round(dst_m)), "end": "destination"})
+    return out
 
 
 def _ready() -> tuple[Optional[Graph], Optional[_Bans], Optional[dict]]:
@@ -1196,6 +1228,7 @@ def route_for_agency(steps: Sequence[Any]) -> dict:
     distance = 0
     eta = 0.0
     avoided: list[str] = []
+    offroad: list[dict] = []
     crosses = False
     warnings: list[str] = []
     ok = True
@@ -1216,6 +1249,10 @@ def route_for_agency(steps: Sequence[Any]) -> dict:
         distance += int(leg["distance_m"])
         eta += float(leg["eta_min"])
         out_steps.extend(leg["steps"])
+        for seg in leg.get("offroad") or ():
+            # Tag which leg it belongs to, so the map can say "the last 121 m to
+            # stop 3 is not a road" rather than just drawing something dashed.
+            offroad.append({**seg, "leg": i + 1, "to_stop": stop_n})
         for c in (leg["geometry"] or {}).get("coordinates", []):
             if not coords or coords[-1] != c:
                 coords.append(c)
@@ -1223,6 +1260,7 @@ def route_for_agency(steps: Sequence[Any]) -> dict:
     return {
         "ok": bool(ok and geometry),
         "geometry": geometry,
+        "offroad": offroad,
         "steps": out_steps,
         "distance_m": distance,
         "eta_min": round(eta, 1),

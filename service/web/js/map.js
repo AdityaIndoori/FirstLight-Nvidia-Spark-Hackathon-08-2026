@@ -174,7 +174,10 @@ const LAYER_GROUPS = [
       count: 'route-' + a,
       on: true,
       swatch: { kind: 'pin', color: COLORS[a] },
-      layers: ['route-' + a + '-real', 'route-' + a + '-approx', 'step-' + a],
+      layers: [
+        'route-' + a + '-real', 'route-' + a + '-approx',
+        'route-' + a + '-offroad', 'step-' + a,
+      ],
       presets: ['dispatch', 'all'],
     })),
   },
@@ -462,6 +465,20 @@ function buildStyle() {
           paint: {
             'line-color': agencyColor(a), 'line-width': 2.4,
             'line-opacity': 0.7, 'line-dasharray': [3, 3],
+          },
+        },
+        {
+          // The snap segments: real distance the crew must cover, but not on any
+          // mapped road. Drawn thin and finely dotted so a crew reads "you are
+          // leaving the road here" instead of assuming a driveway exists. An OSM
+          // extract rarely carries driveways or parking aisles, so the last 60 to
+          // 120 m to a building is routinely off-network.
+          id: 'route-' + a + '-offroad', type: 'line', source: 'routes',
+          filter: ['all', ['==', ['get', 'agency'], a], ['==', ['get', 'offroad'], true]],
+          layout: { 'line-cap': 'butt' },
+          paint: {
+            'line-color': agencyColor(a), 'line-width': 1.8,
+            'line-opacity': 0.85, 'line-dasharray': [1, 2],
           },
         },
       ])),
@@ -898,7 +915,22 @@ function planFeatures(plan) {
     const geom = route && route.geometry;
     if (geom && geom.type === 'LineString' && Array.isArray(geom.coordinates) && geom.coordinates.length > 1) {
       routes.push({ type: 'Feature', geometry: geom, properties: { agency, approx: false } });
-      if (route.warning) warnings.push(AGENCY_LABEL[agency] + ': ' + route.warning);
+      // Overlay the snap segments on top of the routed line, so the stretches that
+      // are not on any mapped road read as dotted rather than as road.
+      for (const seg of Array.isArray(route.offroad) ? route.offroad : []) {
+        const line = seg && seg.coordinates;
+        if (!Array.isArray(line) || line.length < 2) continue;
+        routes.push({
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: line },
+          properties: {
+            agency, offroad: true, approx: false,
+            metres: Number(seg.metres) || 0,
+            to_stop: seg.to_stop || null,
+            end: seg.end || '',
+          },
+        });
+      }
       if (route.ok === false) warnings.push(AGENCY_LABEL[agency] + ': no clean route, the drawn line is not usable as given');
     } else if (agency !== 'police') {
       // No routed geometry yet, or none exists. Draw the connector and say so,

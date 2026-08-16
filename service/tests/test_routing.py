@@ -129,9 +129,18 @@ def _length_m(route: dict) -> float:
 
 
 def _has_contract_keys(route: dict) -> None:
+    """The frozen section 7 Route keys, plus `offroad`.
+
+    `offroad` carries the snap segments: the stretches between the road network and
+    a building, which are real distance a crew must cover but are not on any mapped
+    road. It is additive and always present, so a consumer that ignores it still
+    reads a valid Route, while the map can draw those stretches as what they are
+    instead of implying a driveway the OSM extract never had.
+    """
     assert set(route) == {
         "ok",
         "geometry",
+        "offroad",
         "steps",
         "distance_m",
         "eta_min",
@@ -139,6 +148,11 @@ def _has_contract_keys(route: dict) -> None:
         "blocked_roads_avoided",
         "warning",
     }
+    assert isinstance(route["offroad"], list)
+    for seg in route["offroad"]:
+        # Two points and a real distance, or it is not a drawable segment.
+        assert len(seg["coordinates"]) == 2
+        assert seg["metres"] >= 0
 
 
 # --------------------------------------------------------------------- graph
